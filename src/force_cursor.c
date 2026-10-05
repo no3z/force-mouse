@@ -24,6 +24,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <alsa/asoundlib.h>
+#include "input_probe.h"  // find input devices by capability/name, not by eventN number
 #define MULTIPLIER 1.5
 
 // Cursor state
@@ -238,15 +239,22 @@ static int init_uinput()
     return fd;
 }
 
-// Open real touchscreen device for injecting MT gestures
+// Open real touchscreen device for injecting MT gestures.
+// It is event0 when the touch controller loads at boot, but when it does not, event0
+// becomes gpio-keys, so look for the multi-touch device instead of assuming a number.
 static int open_touchscreen_device()
 {
-    int fd = open("/dev/input/event0", O_WRONLY | O_NONBLOCK);
-    if (fd < 0) {
-        fprintf(stdout, "[TOUCHSCREEN] Failed to open /dev/input/event0 for writing (errno=%d)\n", errno);
+    char path[32], name[PROBE_NAME_LEN];
+    if (probe_find(probe_match_touchscreen, NULL, path, sizeof path, name, sizeof name) != 0) {
+        fprintf(stdout, "[TOUCHSCREEN] No multi-touch device found (touch controller not loaded?), zoom gestures disabled\n");
         return -1;
     }
-    fprintf(stdout, "[TOUCHSCREEN] Opened /dev/input/event0 for MT gesture injection\n");
+    int fd = open(path, O_WRONLY | O_NONBLOCK);
+    if (fd < 0) {
+        fprintf(stdout, "[TOUCHSCREEN] Failed to open %s for writing (errno=%d)\n", path, errno);
+        return -1;
+    }
+    fprintf(stdout, "[TOUCHSCREEN] Opened %s ('%s') for MT gesture injection\n", path, name);
     return fd;
 }
 
@@ -271,21 +279,27 @@ static int open_keyboard_monitor()
     return -1;
 }
 
-// Open event3 (Amit's Input Provider) for key injection
+// Open "Amit's Input Provider" (event3, or event2 without the touchscreen) for key injection
 // MPC already listens to this device, so our keys will be recognized
 static int init_uinput_keyboard()
 {
     // Instead of creating a new virtual keyboard (which MPC won't listen to),
     // open the existing "Amit's Input Provider" keyboard device that MPC already monitors.
     // This device is created by the midiloop addon and MPC opens it at startup.
-    int fd = open("/dev/input/event3", O_WRONLY | O_NONBLOCK);
+    char path[32];
+    if (probe_find(probe_match_name, PROBE_NAME_KEYBOARD, path, sizeof path, NULL, 0) != 0) {
+        fprintf(stdout, "[KEYBOARD] Device '%s' not found (is the MidiLoop addon running?)\n", PROBE_NAME_KEYBOARD);
+        fflush(stdout);
+        return -1;
+    }
+    int fd = open(path, O_WRONLY | O_NONBLOCK);
     if (fd < 0) {
-        fprintf(stdout, "[KEYBOARD] Failed to open /dev/input/event3 (Amit's Input Provider) (errno=%d)\n", errno);
+        fprintf(stdout, "[KEYBOARD] Failed to open %s (Amit's Input Provider) (errno=%d)\n", path, errno);
         fflush(stdout);
         return -1;
     }
 
-    fprintf(stdout, "[KEYBOARD] Opened /dev/input/event3 (Amit's Input Provider) for keyboard injection\n");
+    fprintf(stdout, "[KEYBOARD] Opened %s (Amit's Input Provider) for keyboard injection\n", path);
     fprintf(stdout, "[KEYBOARD] MPC is already listening to this device, so button mappings will work!\n");
     fflush(stdout);
     return fd;
@@ -589,19 +603,59 @@ static void animate_pinch_gesture(int fd, int center_x, int center_y, int zoom_i
     usleep(30000); // 30ms
 }
 
+// Pick the mouse event node. The first line of device.txt is either a path or "auto".
+// A configured path that is not a mouse (the numbers shift when the touch controller
+// is missing at boot, so a stale /dev/input/event2 may now be the keyboard provider)
+// falls back to auto-detection.
+static void resolve_mouse_device(const char* configured, char* out, size_t out_len)
+{
+    char name[PROBE_NAME_LEN] = "";
+    snprintf(out, out_len, "%s", configured);
+
+    if (strcasecmp(configured, "auto") != 0) {
+        int fd = open(configured, O_RDONLY | O_NONBLOCK);
+        if (fd >= 0) {
+            if (ioctl(fd, EVIOCGNAME(sizeof name), name) < 0)
+                name[0] = '\0';
+            int is_mouse = probe_is_mouse(fd, name);
+            close(fd);
+            if (is_mouse)
+                return;
+            fprintf(stdout, "[INIT] WARNING: %s ('%s') is not a mouse, falling back to auto-detection\n", configured, name);
+        } else {
+            fprintf(stdout, "[INIT] WARNING: cannot open %s (errno=%d), falling back to auto-detection\n", configured, errno);
+        }
+    }
+
+    char found[32];
+    if (probe_find(probe_match_mouse, NULL, found, sizeof found, name, sizeof name) == 0) {
+        snprintf(out, out_len, "%s", found);
+        fprintf(stdout, "[INIT] Auto-detected mouse: %s ('%s')\n", found, name);
+    } else {
+        fprintf(stdout, "[INIT] No mouse found by auto-detection\n");
+    }
+}
+
 // Input monitoring thread
 static void* input_monitor(void* arg)
 {
+    (void)arg;
 
-    fprintf(stdout, "--------- opening device %s\n", device);
-    int fd = open(device, O_RDONLY | O_NONBLOCK);
+    if (!device) {
+        fprintf(stdout, "----------- ERROR no mouse device configured (missing /dev/shm/.mouseCursor?)\n");
+        return NULL;
+    }
+    char mouse_path[64];
+    resolve_mouse_device(device, mouse_path, sizeof mouse_path);
+    free(device);
+
+    fprintf(stdout, "--------- opening device %s\n", mouse_path);
+    int fd = open(mouse_path, O_RDONLY | O_NONBLOCK);
     if (fd < 0) {
-        fprintf(stdout, "----------- ERROR opening device %s for Mouse Events\n", device);
-        free(device);
+        fprintf(stdout, "----------- ERROR opening device %s for Mouse Events\n", mouse_path);
 
         return NULL;
     }
-    free(device);
 
     // Initialize uinput for single-touch injection (cursor clicks)
     fprintf(stdout, "[INIT] Attempting to create uinput device...\n");
@@ -616,7 +670,7 @@ static void* input_monitor(void* arg)
     }
 
     // Open real touchscreen for MT gesture injection
-    fprintf(stdout, "[INIT] Attempting to open /dev/input/event0 for writing...\n");
+    fprintf(stdout, "[INIT] Looking for the multi-touch screen...\n");
     fflush(stdout);
     touchscreen_fd = open_touchscreen_device();
     if (touchscreen_fd >= 0) {
@@ -889,7 +943,7 @@ static int read_params_file(const char* path, char** out_str, float* out_val)
     } else {
         char* endptr;
         float val = strtof(line, &endptr);
-        if (endptr == line || *out_val < 0.1f || val > 5.0f)
+        if (endptr == line || val < 0.1f || val > 5.0f)
             val = 1.0f; /* default on parse error or out of range */
         *out_val = val;
     }

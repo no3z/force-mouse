@@ -1,6 +1,9 @@
-/dev/input/event2
+auto
 3
 
+# Line 1 is the mouse device: "auto" finds the mouse by its capabilities, or give a path
+# (e.g. /dev/input/event2). The event numbers change when the touch controller does not
+# load at boot, so "auto" is the safe choice. See docs/CONFIGURATION.md.
 
 # Mouse Button to Hardware Button Mappings via MIDI CC
 

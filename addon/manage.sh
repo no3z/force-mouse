@@ -1,7 +1,7 @@
 #!/bin/sh
 
 appname=mouseCursor
-appTitle=MouseCurosr
+appTitle=MouseCursor
 appDir=mouseCursor
 
 ################ NO NEED TO EDIT BELOW THIS LINE ###############
@@ -12,7 +12,21 @@ mmPath=$(cat /dev/shm/.mmPath)
 runDir="$mmPath/AddOns/"
 installroot="$mmPath/AddOns/$appDir/"
 runScript="$runDir/run_$appname.sh"
+LD_LIB="$mmPath/AddOns/$appDir/libforce_cursor.so"
 mode=$1
+
+# Removing run_mouseCursor.sh is not enough: boot.sh preloads whatever is listed in
+# /dev/shm/.LD_PRELOAD, which lives in RAM until the next reboot. Take our library out.
+UNLOAD() {
+    if [ -f "$mmLD_PRELOAD_VAR" ]; then
+        REST=$(sed "s|$LD_LIB||g" "$mmLD_PRELOAD_VAR" | tr -s ' ' | sed 's/^ //; s/ $//')
+        if [ -n "$REST" ]; then
+            echo "$REST" >"$mmLD_PRELOAD_VAR"
+        else
+            rm -f "$mmLD_PRELOAD_VAR"
+        fi
+    fi
+}
 
 echo "
 ***********************************************************
@@ -22,9 +36,10 @@ echo "
 if [ "$mode" == "UNINSTALL" ]; then
     rm -f "/dev/shm/.mouseCursor" 2>/dev/null
     rm -f "$runScript"
+    UNLOAD
     echo "$appTitle has been disabled"
     echo "Restarting Force Application "
-    
+
     respawn
 echo "Using Disable Option, and Delete cursorMouse Folder fron Addons"
     
@@ -33,9 +48,9 @@ fi
 if [ "$mode" == "DISABLE" ]; then
     rm -f "/dev/shm/.mouseCursor" 2>/dev/null
     rm -f "$runScript"
+    UNLOAD
     echo "$appTitle has been disabled"
     echo "Restarting Force Application "
-    echo "It Is Recommeded that you reboot force for proper disabling!"
     respawn
 fi
 
