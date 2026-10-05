@@ -48,6 +48,7 @@ stage() {
     rm -rf "$dest"
     mkdir -p "$dest"
     cp addon/manage.sh addon/run_mouseCursor.sh addon/device.txt addon/README.txt addon/VERSION "$dest/"
+    cp LICENSE NOTICE.md "$dest/"
     cp build/libforce_cursor.so "$dest/"
     mkdir -p "$dest/tools"
     cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot "$dest/tools/"

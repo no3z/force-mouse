@@ -10,6 +10,8 @@
 - The input thread drains every pending event before sleeping (it slept 1 ms after each event, which
   capped throughput at about 1000 events/s and would lag with a fast mouse).
 - New tool `drm_screenshot`: saves what the Force is showing, rotated to landscape.
+- MIT license (Copyright (c) 2026 no3productionz), `NOTICE.md` for third-party parts, and a GitHub
+  Actions workflow that builds and publishes a Release when a `v*` tag is pushed.
 
 ## 3.0.0 - 2026-10-05
 

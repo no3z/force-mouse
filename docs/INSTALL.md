@@ -41,6 +41,21 @@ arm-linux-gnueabihf-gcc -shared -fPIC -O2 -Wall -Wextra \
   -o libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound -ldrm
 ```
 
+## Install from a release (no Docker)
+
+The Releases page has `force-mouse-<version>-armv7.zip` (the `mouseCursor` folder, ready to use) and
+`SHA256SUMS`. Releases are built by GitHub Actions from the tagged commit.
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS
+unzip force-mouse-*-armv7.zip
+tar -cf - mouseCursor | ssh root@<force-ip> 'tar -xf - -C /media/662522/AddOns && sh /media/662522/AddOns/mouseCursor/manage.sh ENABLE'
+```
+
+This is meant for a first install. It restarts the Force application. To upgrade a running install
+use `tools/install.sh` (it replaces the library by rename), or run `manage.sh DISABLE` before
+copying: the library is mapped into MPC while it runs and must not be overwritten in place.
+
 ## Install with the script
 
 ```bash

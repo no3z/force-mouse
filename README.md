@@ -1,6 +1,6 @@
 # force-mouse
 
-USB mouse support for the Akai Force running [MockbaMod](https://github.com/aud10slave/MockbaModular):
+USB mouse support for the Akai Force running MockbaMod:
 an `LD_PRELOAD` addon that draws a hardware cursor, turns clicks and drags into touch events,
 turns the mouse wheel into pinch-to-zoom, and maps extra mouse buttons to keys or MIDI CC.
 
@@ -33,7 +33,8 @@ and what is and is not verified are in [docs/COMPATIBILITY.md](docs/COMPATIBILIT
 
 ## Quick start
 
-Requirements on the PC: Docker. On the Force: MockbaMod on the SD card and SSH as root.
+Requirements on the PC: Docker. On the Force: MockbaMod on the SD card and SSH as root. Without
+Docker, download the zip from the Releases page and follow [docs/INSTALL.md](docs/INSTALL.md#install-from-a-release-no-docker).
 
 ```bash
 tools/build.sh                     # cross-compiles for the Force, stages dist/mouseCursor
@@ -69,5 +70,6 @@ docs/                 documentation
 
 ## License
 
-No license has been chosen yet. The cursor bitmap derives from bonsaipanda's Code-Snippets and
-the MockbaMod integration is by Amit Talwar; check with them before redistributing.
+MIT, Copyright (c) 2026 no3productionz: see [LICENSE](LICENSE). Parts that come from other people
+(cursor bitmap, MockbaMod integration) are listed in [NOTICE.md](NOTICE.md); read it before
+redistributing.

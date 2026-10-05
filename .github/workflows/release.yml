@@ -1,0 +1,31 @@
+name: release
+
+# Pushing a tag such as v3.0.1 builds the add-on from that commit and publishes it as a GitHub
+# Release. No personal token is involved: the run's own GITHUB_TOKEN is used.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag must match addon/VERSION
+        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < addon/VERSION)"
+
+      - name: Build
+        run: tools/build.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/force-mouse-*-armv7.zip dist/SHA256SUMS \
+            --title "Mouse Cursor add-on ${GITHUB_REF_NAME} for Akai Force" \
+            --notes-file .github/release-notes.md
