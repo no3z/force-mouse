@@ -58,7 +58,12 @@ mkdir -p "\$D"
 # keep the previous library for a quick rollback and the user's configuration
 [ -f "\$D/libforce_cursor.so" ] && cp -f "\$D/libforce_cursor.so" "\$D/libforce_cursor.so.prev"
 [ -f "\$D/device.txt" ] && cp -f "\$D/device.txt" /tmp/mouseCursor.device.keep
+# MPC has the library mapped while it runs: never rewrite it in place (that can crash MPC),
+# copy under another name and rename, which leaves the mapped file untouched.
+mv /tmp/force-mouse-stage/mouseCursor/libforce_cursor.so /tmp/force-mouse-stage/libforce_cursor.so.new
 cp -rf /tmp/force-mouse-stage/mouseCursor/* "\$D/"
+cp -f /tmp/force-mouse-stage/libforce_cursor.so.new "\$D/libforce_cursor.so.new"
+mv -f "\$D/libforce_cursor.so.new" "\$D/libforce_cursor.so"
 if [ -f /tmp/mouseCursor.device.keep ]; then
     cp -f "\$D/device.txt" "\$D/device.txt.default"
     cp -f /tmp/mouseCursor.device.keep "\$D/device.txt"
