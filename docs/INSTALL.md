@@ -103,6 +103,7 @@ On-device tools are installed in `/media/662522/AddOns/mouseCursor/tools/`:
 tools/probe_inputs                      # which event node is used for the mouse and key injection
 tools/drm_planes /dev/dri/card1         # CRTC and planes: types, formats, state
 tools/evdump /dev/input/eventN 10       # print the events of a device for 10 s (evtest is not installed)
+tools/drm_screenshot /tmp/screen.ppm    # what the Force is showing (landscape PPM; -r keeps the panel orientation)
 tools/fake_mouse                        # virtual mouse driven by a FIFO, for testing without hardware
 ```
 

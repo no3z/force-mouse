@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.1 - 2026-10-05
+
+- Fix: the cursor sometimes glitched and jumped around. The legacy cursor move ioctl ignores the hot
+  spot while the atomic commits apply it, so the arrow was drawn 63 px off while the mouse moved and
+  snapped back every time MPC committed a frame. Both paths now subtract the hot spot. Measured by
+  sampling the plane position during steady motion: before, a +57 px jump and a final position
+  63 px off; after, a smooth 1167 to 807 with no jump.
+- The input thread drains every pending event before sleeping (it slept 1 ms after each event, which
+  capped throughput at about 1000 events/s and would lag with a fast mouse).
+- New tool `drm_screenshot`: saves what the Force is showing, rotated to landscape.
+
 ## 3.0.0 - 2026-10-05
 
 Rework for Force firmware 3.9.1.2, where versions before 3.0.0 did nothing (MPC no longer calls the

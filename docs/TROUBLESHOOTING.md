@@ -98,6 +98,14 @@ Use `auto` (or `name:<text>`) on the first line of `device.txt`.
   destination in `send_midi_cc()` has to change.
 - MidiLoop must have the CC assigned in `midiloop.config`.
 
+## The cursor jumps back and forth while moving (versions before 3.0.1)
+
+The two ways of positioning the cursor plane disagreed by the hot spot offset, so the arrow
+alternated between two positions 63 px apart whenever MPC redrew while the mouse moved. Update to
+3.0.1. To check a version: sample the plane position while moving the mouse and look for jumps,
+for example with `tools/fake_mouse` and
+`awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f && /crtc-pos/' /sys/kernel/debug/dri/1/state`.
+
 ## Cursor is erratic or too fast
 
 Change the speed on line 2 of `device.txt` (0.1 to 5.0) and restart the application. A value

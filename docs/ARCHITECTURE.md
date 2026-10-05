@@ -39,8 +39,10 @@ commit, so a cursor set once is wiped at the next frame. The `drmModeAtomicCommi
 adds this plane to each real commit (not to `TEST_ONLY` ones), then restores MPC's request with
 `drmModeAtomicSetCursor`. If the kernel rejects a commit with our plane but accepts MPC's alone,
 that is logged; after three of those the injection is switched off. Between commits the position
-is updated with the legacy `drmModeMoveCursor`; in the tests the plane state in debugfs followed the
-mouse that way. The hook on `drmModeAtomicAddProperty` only logs the first 24 writes MPC
+is updated with the legacy `drmModeMoveCursor`. That ioctl takes the position of the image's
+top-left corner and ignores the hot spot (the kernel only uses `hot_x`/`hot_y` for virtualised
+GPUs), so the addon subtracts the hot spot itself in both paths; otherwise the arrow jumped by the
+hot spot offset (63 px) every time MPC committed a frame (fixed in 3.0.1). The hook on `drmModeAtomicAddProperty` only logs the first 24 writes MPC
 makes to the cursor plane.
 
 **Cursor bitmap.** `mouse_cursor.h` holds `cursor_data[4096]` (64x64, `0xAARRGGBB`), tip at pixel

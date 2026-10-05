@@ -913,11 +913,16 @@ static void* input_monitor(void* arg)
             } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
                 // Move cursor after sync
                 if (saved_fd >= 0 && real_drmModeMoveCursor) {
-                    real_drmModeMoveCursor(saved_fd, saved_crtc, cursor_x, cursor_y);
+                    // The legacy move ioctl takes the position of the image's top-left corner and
+                    // ignores the hot spot, unlike the atomic commits, so apply it here too. Without
+                    // this the arrow jumped by the hot spot offset whenever MPC committed a frame.
+                    real_drmModeMoveCursor(saved_fd, saved_crtc, cursor_x - cursor_hot_x, cursor_y - cursor_hot_y);
                 }
             }
         }
-        usleep(1000); // 1ms sleep
+        if (n != sizeof(ev)) {
+            usleep(1000); // nothing pending: wait 1 ms; otherwise keep draining the queue
+        }
     }
 
     if (uinput_fd >= 0) {
@@ -1066,7 +1071,7 @@ static int show_cursor(int fd, uint32_t crtcId)
     // Initially position the cursor
     real_drmModeMoveCursor = dlsym(RTLD_NEXT, "drmModeMoveCursor");
     if (real_drmModeMoveCursor) {
-        real_drmModeMoveCursor(fd, crtcId, cursor_x, cursor_y);
+        real_drmModeMoveCursor(fd, crtcId, cursor_x - cursor_hot_x, cursor_y - cursor_hot_y);
     }
     return ret;
 }

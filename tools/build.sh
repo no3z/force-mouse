@@ -20,12 +20,14 @@ compile() {
     for tool in probe_inputs evdump fake_mouse; do
         arm-linux-gnueabihf-gcc $cflags -o "build/$tool" "tools/$tool.c"
     done
-    arm-linux-gnueabihf-gcc $cflags -I/usr/include/libdrm -I/usr/include/arm-linux-gnueabihf \
-        -o build/drm_planes tools/drm_planes.c -ldrm
-    arm-linux-gnueabihf-strip build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes
+    for tool in drm_planes drm_screenshot; do
+        arm-linux-gnueabihf-gcc $cflags -I/usr/include/libdrm -I/usr/include/arm-linux-gnueabihf \
+            -o "build/$tool" "tools/$tool.c" -ldrm
+    done
+    arm-linux-gnueabihf-strip build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot
 
     echo "--- checks"
-    for f in build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes; do
+    for f in build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot; do
         arm-linux-gnueabihf-readelf -h "$f" | grep -E 'Class:|Machine:' | tr -s ' ' | sed "s|^|$f: |"
         arm-linux-gnueabihf-readelf -d "$f" | grep NEEDED | sed "s|^|$f: |"
         local highest
@@ -48,7 +50,7 @@ stage() {
     cp addon/manage.sh addon/run_mouseCursor.sh addon/device.txt addon/README.txt addon/VERSION "$dest/"
     cp build/libforce_cursor.so "$dest/"
     mkdir -p "$dest/tools"
-    cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes "$dest/tools/"
+    cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot "$dest/tools/"
     chmod +x "$dest/manage.sh" "$dest/run_mouseCursor.sh" "$dest"/tools/*
     rm -f "dist/force-mouse-${version}-armv7.zip"
     (cd dist && zip -qr "force-mouse-${version}-armv7.zip" mouseCursor)
