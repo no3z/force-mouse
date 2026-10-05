@@ -11,7 +11,7 @@ Credits: original idea and cursor hack by **@no3z**, MockbaMod addon adaptation 
 
 | Force firmware | Status |
 |---|---|
-| **3.9.1.2** (MockbaMod 4.51, OS az0x 5.0.17, kernel 6.18.26-az01-rt4) | Supported since 3.0.0. Cursor plane, touch events and mouse grab verified with a synthetic mouse; on-screen behaviour awaiting confirmation on the device. |
+| **3.9.1.2** (MockbaMod 4.51, OS az0x 5.0.17, kernel 6.18.26-az01-rt4) | Supported since 3.0.0. The author reported it working on the device on 2026-10-05; the checks made with a synthetic mouse are listed in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). |
 | Firmware of January 2026 | The original hook path is still in the code; not re-tested with 3.0.0. |
 
 Versions before 3.0.0 did nothing on 3.9.1.2: MPC no longer calls the legacy `drmModeSetCursor*`

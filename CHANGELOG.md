@@ -16,8 +16,8 @@ legacy `drmModeSetCursor*` functions the addon hooked; see [docs/COMPATIBILITY.m
   line of `device.txt`.
 - Crash-loop guard (`/dev/shm/.mouseCursor.guard`).
 - New tools: `drm_planes`, `evdump`, `fake_mouse`; the library links `libdrm` explicitly.
-- Verified with a synthetic mouse at the DRM-state and input-event level; the on-screen result still
-  needs confirmation on the device.
+- Verified with a synthetic mouse at the DRM-state and input-event level, then confirmed working on
+  the device by the author.
 
 ## 2.1.0 - 2026-10-05
 

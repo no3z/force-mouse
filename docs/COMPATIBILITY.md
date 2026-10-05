@@ -4,7 +4,7 @@
 
 | Force firmware | Status |
 |---|---|
-| **3.9.1.2** (MockbaMod 4.51, OS az0x 5.0.17, kernel 6.18.26-az01-rt4) | Supported since 3.0.0. Loads, shows the cursor plane and emits touch events; verified with a synthetic mouse at the DRM-state and input-event level (see [Verification](#verification)). The on-screen result (look and orientation of the cursor, whether MPC acts on the touches) needs confirmation on the device. |
+| **3.9.1.2** (MockbaMod 4.51, OS az0x 5.0.17, kernel 6.18.26-az01-rt4) | Supported since 3.0.0. Loads, shows the cursor plane and emits touch events; verified with a synthetic mouse at the DRM-state and input-event level (see [Verification](#verification)), and reported working on the device by the author on 2026-10-05. |
 | Firmware of January 2026 (the original working folder is named "3.7") | The original hook path (`drmModeSetCursor2`) is still in the code. Worked at the time per the original notes; not re-tested with 3.0.0. |
 
 The 3.9.1.2 measurements were taken on 2026-10-05 on a Force with glibc 2.39, `libdrm.so.2.4.0`,
@@ -99,9 +99,9 @@ Done on 2026-10-05 with a synthetic mouse (`tools/fake_mouse`) and the real trac
   from 30 px to 100 px or shrinking back.
 - The mouse is grabbed (`Mouse grabbed` in the log).
 
-Not verified (needs eyes on the screen): that the cursor is visible and upright, that clicks land
-under the cursor, that MPC reacts to the virtual touches and to the pinch, button mappings and MIDI
-CC delivery.
+After that the author confirmed on the device that it works (2026-10-05); the report was not
+itemised. Not checked separately: each `CURSOR_ROTATE` value, button mappings and MIDI CC delivery,
+and long-run stability.
 
 ## Other MockbaMod addons on 3.9.1.2
 

@@ -111,8 +111,8 @@ events. `GRAB=0` leaves the mouse to MPC as well.
 
 **CURSOR_ROTATE** (default 270). The panel is portrait while MPC draws its interface rotated by 90
 degrees, so the arrow bitmap is turned to look upright; the active point follows the tip. If the
-arrow looks wrong on your Force try 0, 90, 180 or 270 and restart the application. This default
-was derived from the coordinate mapping, not seen on the screen.
+arrow looks wrong on your Force try 0, 90, 180 or 270 and restart the application. The default was
+derived from the coordinate mapping; the author reported the addon working with it.
 
 ## Mouse wheel
 
