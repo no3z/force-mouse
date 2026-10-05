@@ -24,12 +24,20 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <alsa/asoundlib.h>
+#include <dirent.h>
+#include <drm_fourcc.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "input_probe.h"  // find input devices by capability/name, not by eventN number
 #define MULTIPLIER 1.5
+
+// Output goes to the journal of acvs; flush so no line is lost if MPC dies.
+#define LOG(...) do { fprintf(stdout, __VA_ARGS__); fflush(stdout); } while (0)
 
 // Cursor state
 #include "mouse_cursor.h"  // External cursor design (64x64 RGBA)
 static uint32_t cursor_bo = 0;
+static uint32_t cursor_pitch = 256;
 static int cursor_initialized = 0;
 static int saved_fd = -1;
 static uint32_t saved_crtc = 0;
@@ -37,12 +45,16 @@ static int cursor_x = 50; // Bottom left corner
 static int cursor_y = 1230; // Bottom left corner
 static pthread_t input_thread;
 static int input_running = 0;
-static int uinput_fd = -1;        // Single device for single touch (cursor clicks)
-static int touchscreen_fd = -1;   // Real touchscreen device for MT gestures
+static int uinput_fd = -1;        // Virtual multi-touch screen: clicks, drags and pinch gestures
 static int keyboard_fd = -1;      // Virtual keyboard for button->key mappings
 static volatile int gesture_in_progress = 0;
 static volatile int left_button_pressed = 0;  // Track left button state for dragging
 char* device = NULL;
+static int cursor_rotate = 270;   // CURSOR_ROTATE: bitmap rotation in degrees (0, 90, 180, 270), clockwise in panel space
+static int cursor_hot_x = 0;      // where the tip of the arrow is after the rotation
+static int cursor_hot_y = 0;
+static int grab_mouse = 1;        // EVIOCGRAB the mouse so MPC (libinput) does not also act on it
+static int addon_started = 0;
 
 // MIDI sequencer state
 static snd_seq_t *midi_seq = NULL;
@@ -145,22 +157,57 @@ static int parse_code(const char* str, const struct name_code_pair* table)
     return -1;  // Not found
 }
 
+// Rotate the 64x64 cursor bitmap clockwise (in panel space) and follow the tip of the arrow,
+// which is pixel (0,0) in mouse_cursor.h. The panel is portrait while MPC draws its landscape
+// interface rotated by 90 degrees, so the arrow may need a turn to look upright.
+static void rotate_cursor_bitmap(int degrees)
+{
+    uint32_t src[64 * 64];
+    memcpy(src, cursor_data, sizeof(src));
+    cursor_hot_x = 0;
+    cursor_hot_y = 0;
+    if (degrees != 90 && degrees != 180 && degrees != 270) {
+        LOG("[BOOT] Cursor bitmap not rotated (CURSOR_ROTATE=%d)\n", degrees);
+        return;
+    }
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            int nx = x, ny = y;
+            if (degrees == 90) {
+                nx = 63 - y;
+                ny = x;
+            } else if (degrees == 180) {
+                nx = 63 - x;
+                ny = 63 - y;
+            } else {
+                nx = y;
+                ny = 63 - x;
+            }
+            cursor_data[ny * 64 + nx] = src[y * 64 + x];
+        }
+    }
+    cursor_hot_x = degrees == 90 ? 63 : degrees == 180 ? 63 : 0;
+    cursor_hot_y = degrees == 90 ? 0 : 63;
+    LOG("[BOOT] Cursor bitmap rotated %d degrees, hot spot (%d,%d)\n", degrees, cursor_hot_x, cursor_hot_y);
+}
+
 // Initialize bright visible cursor
 static void init_cursor(int fd, uint32_t crtcId)
 {
-    fprintf(stdout, "-------MockbaMod Mouse Cursor --------\n");
+    LOG("-------MockbaMod Mouse Cursor --------\n");
     if (read_params_file("/dev/shm/.mouseCursor", &device, &rate) != 0) {
-        fprintf(stdout, "*** MockbaMod Mouse Cursor: Failed to read device.txt file *****\n");
+        LOG("*** MockbaMod Mouse Cursor: Failed to read device.txt file *****\n");
 
         return;
     } else {
-        fprintf(stdout, "-------MockbaMod Mouse Cursor --------\n\n    Device: %s\n    Speed Multiplier:%f\n", device, rate);
+        LOG("-------MockbaMod Mouse Cursor --------\n\n    Device: %s\n    Speed Multiplier:%f\n", device, rate);
     }
     if (cursor_initialized)
         return;
 
     // Cursor data is loaded from mouse_cursor.h (64x64 RGBA with transparency)
     // No need to generate it here - just use the pre-defined cursor_data array
+    rotate_cursor_bitmap(cursor_rotate);
 
     // Create DRM buffer
     struct drm_mode_create_dumb create_req = { 0 };
@@ -170,6 +217,7 @@ static void init_cursor(int fd, uint32_t crtcId)
 
     if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_req) == 0) {
         cursor_bo = create_req.handle;
+        cursor_pitch = create_req.pitch;
         saved_fd = fd;
         saved_crtc = crtcId;
 
@@ -187,13 +235,16 @@ static void init_cursor(int fd, uint32_t crtcId)
     }
 }
 
-// Initialize uinput device for single-touch events (cursor clicks only)
+// Virtual multi-touch screen (MT protocol B), created before MPC builds its libinput context.
+// MPC reads every input device through libinput, which treats a device with INPUT_PROP_DIRECT
+// and ABS_MT axes as a touchscreen. Clicks, drags and pinch gestures therefore reach MPC like
+// real finger input, and keep working when the physical touch controller did not load at boot.
 static int init_uinput()
 {
     struct uinput_user_dev uidev;
     int fd;
 
-    fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         return -1;
     }
@@ -203,26 +254,39 @@ static int init_uinput()
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
     ioctl(fd, UI_SET_EVBIT, EV_ABS);
 
-    // Enable keys
+    // Enable keys and properties
     ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
+    ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
-    // Enable single-touch axes only
+    // Single-touch axes (mirrored like a real panel) and multi-touch axes
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
+    ioctl(fd, UI_SET_ABSBIT, ABS_MT_SLOT);
+    ioctl(fd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
+    ioctl(fd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
+    ioctl(fd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
 
     // Setup device info
     memset(&uidev, 0, sizeof(uidev));
-    snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Virtual Mouse Touch");
+    snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, PROBE_NAME_MOUSE_TOUCH);
     uidev.id.bustype = BUS_USB;
     uidev.id.vendor = 0x0000;
     uidev.id.product = 0x0000;
     uidev.id.version = 0;
 
-    // Set axis ranges
+    // Set axis ranges (panel coordinates, portrait)
     uidev.absmin[ABS_X] = 0;
     uidev.absmax[ABS_X] = 799;
     uidev.absmin[ABS_Y] = 0;
     uidev.absmax[ABS_Y] = 1279;
+    uidev.absmin[ABS_MT_POSITION_X] = 0;
+    uidev.absmax[ABS_MT_POSITION_X] = 799;
+    uidev.absmin[ABS_MT_POSITION_Y] = 0;
+    uidev.absmax[ABS_MT_POSITION_Y] = 1279;
+    uidev.absmin[ABS_MT_SLOT] = 0;
+    uidev.absmax[ABS_MT_SLOT] = 9;
+    uidev.absmin[ABS_MT_TRACKING_ID] = 0;
+    uidev.absmax[ABS_MT_TRACKING_ID] = 65535;
 
     // Write device
     if (write(fd, &uidev, sizeof(uidev)) < 0) {
@@ -239,25 +303,6 @@ static int init_uinput()
     return fd;
 }
 
-// Open real touchscreen device for injecting MT gestures.
-// It is event0 when the touch controller loads at boot, but when it does not, event0
-// becomes gpio-keys, so look for the multi-touch device instead of assuming a number.
-static int open_touchscreen_device()
-{
-    char path[32], name[PROBE_NAME_LEN];
-    if (probe_find(probe_match_touchscreen, NULL, path, sizeof path, name, sizeof name) != 0) {
-        fprintf(stdout, "[TOUCHSCREEN] No multi-touch device found (touch controller not loaded?), zoom gestures disabled\n");
-        return -1;
-    }
-    int fd = open(path, O_WRONLY | O_NONBLOCK);
-    if (fd < 0) {
-        fprintf(stdout, "[TOUCHSCREEN] Failed to open %s for writing (errno=%d)\n", path, errno);
-        return -1;
-    }
-    fprintf(stdout, "[TOUCHSCREEN] Opened %s ('%s') for MT gesture injection\n", path, name);
-    return fd;
-}
-
 // Open physical keyboard device for monitoring hardware button codes
 static int open_keyboard_monitor()
 {
@@ -268,14 +313,14 @@ static int open_keyboard_monitor()
     for (int i = 0; kbd_paths[i] != NULL; i++) {
         int fd = open(kbd_paths[i], O_RDONLY | O_NONBLOCK);
         if (fd >= 0) {
-            fprintf(stdout, "[KBD_MONITOR] Opened %s for hardware button monitoring\n", kbd_paths[i]);
-            fprintf(stdout, "[KBD_MONITOR] Press any hardware buttons (MENU, SHIFT, etc.) to see their key codes\n");
+            LOG("[KBD_MONITOR] Opened %s for hardware button monitoring\n", kbd_paths[i]);
+            LOG("[KBD_MONITOR] Press any hardware buttons (MENU, SHIFT, etc.) to see their key codes\n");
             fflush(stdout);
             return fd;
         }
     }
 
-    fprintf(stdout, "[KBD_MONITOR] Could not open keyboard device for monitoring\n");
+    LOG("[KBD_MONITOR] Could not open keyboard device for monitoring\n");
     return -1;
 }
 
@@ -288,19 +333,19 @@ static int init_uinput_keyboard()
     // This device is created by the midiloop addon and MPC opens it at startup.
     char path[32];
     if (probe_find(probe_match_name, PROBE_NAME_KEYBOARD, path, sizeof path, NULL, 0) != 0) {
-        fprintf(stdout, "[KEYBOARD] Device '%s' not found (is the MidiLoop addon running?)\n", PROBE_NAME_KEYBOARD);
+        LOG("[KEYBOARD] Device '%s' not found (is the MidiLoop addon running?)\n", PROBE_NAME_KEYBOARD);
         fflush(stdout);
         return -1;
     }
     int fd = open(path, O_WRONLY | O_NONBLOCK);
     if (fd < 0) {
-        fprintf(stdout, "[KEYBOARD] Failed to open %s (Amit's Input Provider) (errno=%d)\n", path, errno);
+        LOG("[KEYBOARD] Failed to open %s (Amit's Input Provider) (errno=%d)\n", path, errno);
         fflush(stdout);
         return -1;
     }
 
-    fprintf(stdout, "[KEYBOARD] Opened %s (Amit's Input Provider) for keyboard injection\n", path);
-    fprintf(stdout, "[KEYBOARD] MPC is already listening to this device, so button mappings will work!\n");
+    LOG("[KEYBOARD] Opened %s (Amit's Input Provider) for keyboard injection\n", path);
+    LOG("[KEYBOARD] MPC is already listening to this device, so button mappings will work!\n");
     fflush(stdout);
     return fd;
 }
@@ -313,7 +358,7 @@ static int init_midi_sequencer()
     // Open ALSA sequencer
     err = snd_seq_open(&midi_seq, "default", SND_SEQ_OPEN_OUTPUT, 0);
     if (err < 0) {
-        fprintf(stdout, "[MIDI] Failed to open ALSA sequencer: %s\n", snd_strerror(err));
+        LOG("[MIDI] Failed to open ALSA sequencer: %s\n", snd_strerror(err));
         fflush(stdout);
         return -1;
     }
@@ -326,14 +371,14 @@ static int init_midi_sequencer()
                                             SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ,
                                             SND_SEQ_PORT_TYPE_APPLICATION);
     if (midi_port < 0) {
-        fprintf(stdout, "[MIDI] Failed to create MIDI port\n");
+        LOG("[MIDI] Failed to create MIDI port\n");
         fflush(stdout);
         snd_seq_close(midi_seq);
         midi_seq = NULL;
         return -1;
     }
 
-    fprintf(stdout, "[MIDI] ALSA sequencer initialized, client port: %d\n", midi_port);
+    LOG("[MIDI] ALSA sequencer initialized, client port: %d\n", midi_port);
     fflush(stdout);
     return 0;
 }
@@ -342,7 +387,7 @@ static int init_midi_sequencer()
 static void send_midi_cc(int cc_number, int value, int pressed)
 {
     if (!midi_seq || midi_port < 0) {
-        fprintf(stdout, "[MIDI] Sequencer not initialized!\n");
+        LOG("[MIDI] Sequencer not initialized!\n");
         fflush(stdout);
         return;
     }
@@ -369,10 +414,10 @@ static void send_midi_cc(int cc_number, int value, int pressed)
 
     // Send the event
     if (snd_seq_event_output(midi_seq, &ev) < 0) {
-        fprintf(stdout, "[MIDI] Error sending CC %d\n", cc_number);
+        LOG("[MIDI] Error sending CC %d\n", cc_number);
         fflush(stdout);
     } else {
-        fprintf(stdout, "[MIDI] Sent CC %d (value=%d) to 129:0\n", cc_number, value);
+        LOG("[MIDI] Sent CC %d (value=%d) to 129:0\n", cc_number, value);
         fflush(stdout);
     }
 
@@ -409,32 +454,75 @@ static struct button_mapping* get_button_mapping(int button_code)
     return NULL;  // No mapping
 }
 
-// Send touch event
+// Send the cursor as finger 1 (slot 0) of the virtual touch screen
 static void send_touch_event(int fd, int x, int y, int pressed)
 {
-    struct input_event ev[4];
+    static int finger_down = 0;
+    static int next_tracking_id = 100;
+    struct input_event ev[8];
+    int n = 0;
+
+    if (!pressed && !finger_down) {
+        return;
+    }
     memset(ev, 0, sizeof(ev));
 
-    // Position
-    ev[0].type = EV_ABS;
-    ev[0].code = ABS_X;
-    ev[0].value = x;
+    ev[n].type = EV_ABS;
+    ev[n].code = ABS_MT_SLOT;
+    ev[n].value = 0;
+    n++;
 
-    ev[1].type = EV_ABS;
-    ev[1].code = ABS_Y;
-    ev[1].value = y;
+    if (!finger_down && pressed) {
+        // New touch: fresh tracking id, BTN_TOUCH down
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_MT_TRACKING_ID;
+        ev[n].value = next_tracking_id;
+        n++;
+        next_tracking_id = next_tracking_id >= 60000 ? 100 : next_tracking_id + 1;
 
-    // Touch state
-    ev[2].type = EV_KEY;
-    ev[2].code = BTN_TOUCH;
-    ev[2].value = pressed;
+        ev[n].type = EV_KEY;
+        ev[n].code = BTN_TOUCH;
+        ev[n].value = 1;
+        n++;
+        finger_down = 1;
+    }
 
-    // Sync
-    ev[3].type = EV_SYN;
-    ev[3].code = SYN_REPORT;
-    ev[3].value = 0;
+    if (pressed) {
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_MT_POSITION_X;
+        ev[n].value = x;
+        n++;
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_MT_POSITION_Y;
+        ev[n].value = y;
+        n++;
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_X;
+        ev[n].value = x;
+        n++;
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_Y;
+        ev[n].value = y;
+        n++;
+    } else {
+        // Release: tracking id -1, BTN_TOUCH up
+        ev[n].type = EV_ABS;
+        ev[n].code = ABS_MT_TRACKING_ID;
+        ev[n].value = -1;
+        n++;
+        ev[n].type = EV_KEY;
+        ev[n].code = BTN_TOUCH;
+        ev[n].value = 0;
+        n++;
+        finger_down = 0;
+    }
 
-    write(fd, ev, sizeof(ev));
+    ev[n].type = EV_SYN;
+    ev[n].code = SYN_REPORT;
+    ev[n].value = 0;
+    n++;
+
+    write(fd, ev, n * sizeof(struct input_event));
 }
 
 // Send a complete two-finger touch frame (both slots + one sync)
@@ -577,7 +665,7 @@ static void animate_pinch_gesture(int fd, int center_x, int center_y, int zoom_i
 
         // Debug output for first frame
         if (first_frame) {
-            fprintf(stdout, "[GESTURE] Frame %d: finger1=(%d,%d) finger2=(%d,%d) spacing=%dpx tid=(%d,%d)\n",
+            LOG("[GESTURE] Frame %d: finger1=(%d,%d) finger2=(%d,%d) spacing=%dpx tid=(%d,%d)\n",
                     frame, x1, y1, x2, y2, spacing, tid1, tid2);
             fflush(stdout);
         }
@@ -612,7 +700,16 @@ static void resolve_mouse_device(const char* configured, char* out, size_t out_l
     char name[PROBE_NAME_LEN] = "";
     snprintf(out, out_len, "%s", configured);
 
-    if (strcasecmp(configured, "auto") != 0) {
+    if (strncmp(configured, "name:", 5) == 0) {
+        // "name:<text>": the mouse whose name contains <text> (several mice, or a stable choice)
+        char found[32];
+        if (probe_find(probe_match_mouse_named, configured + 5, found, sizeof found, name, sizeof name) == 0) {
+            snprintf(out, out_len, "%s", found);
+            LOG("[INIT] Mouse matching '%s': %s ('%s')\n", configured + 5, found, name);
+            return;
+        }
+        LOG("[INIT] WARNING: no mouse named '%s', falling back to auto-detection\n", configured + 5);
+    } else if (strcasecmp(configured, "auto") != 0) {
         int fd = open(configured, O_RDONLY | O_NONBLOCK);
         if (fd >= 0) {
             if (ioctl(fd, EVIOCGNAME(sizeof name), name) < 0)
@@ -621,18 +718,18 @@ static void resolve_mouse_device(const char* configured, char* out, size_t out_l
             close(fd);
             if (is_mouse)
                 return;
-            fprintf(stdout, "[INIT] WARNING: %s ('%s') is not a mouse, falling back to auto-detection\n", configured, name);
+            LOG("[INIT] WARNING: %s ('%s') is not a mouse, falling back to auto-detection\n", configured, name);
         } else {
-            fprintf(stdout, "[INIT] WARNING: cannot open %s (errno=%d), falling back to auto-detection\n", configured, errno);
+            LOG("[INIT] WARNING: cannot open %s (errno=%d), falling back to auto-detection\n", configured, errno);
         }
     }
 
     char found[32];
     if (probe_find(probe_match_mouse, NULL, found, sizeof found, name, sizeof name) == 0) {
         snprintf(out, out_len, "%s", found);
-        fprintf(stdout, "[INIT] Auto-detected mouse: %s ('%s')\n", found, name);
+        LOG("[INIT] Auto-detected mouse: %s ('%s')\n", found, name);
     } else {
-        fprintf(stdout, "[INIT] No mouse found by auto-detection\n");
+        LOG("[INIT] No mouse found by auto-detection\n");
     }
 }
 
@@ -642,48 +739,40 @@ static void* input_monitor(void* arg)
     (void)arg;
 
     if (!device) {
-        fprintf(stdout, "----------- ERROR no mouse device configured (missing /dev/shm/.mouseCursor?)\n");
+        LOG("----------- ERROR no mouse device configured (missing /dev/shm/.mouseCursor?)\n");
         return NULL;
     }
     char mouse_path[64];
     resolve_mouse_device(device, mouse_path, sizeof mouse_path);
     free(device);
 
-    fprintf(stdout, "--------- opening device %s\n", mouse_path);
-    int fd = open(mouse_path, O_RDONLY | O_NONBLOCK);
+    LOG("--------- opening device %s\n", mouse_path);
+    int fd = open(mouse_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
-        fprintf(stdout, "----------- ERROR opening device %s for Mouse Events\n", mouse_path);
+        LOG("----------- ERROR opening device %s for Mouse Events\n", mouse_path);
 
         return NULL;
     }
 
-    // Initialize uinput for single-touch injection (cursor clicks)
-    fprintf(stdout, "[INIT] Attempting to create uinput device...\n");
-    fflush(stdout);
-    uinput_fd = init_uinput();
-    if (uinput_fd >= 0) {
-        fprintf(stdout, "[INIT] SUCCESS: Virtual Touch device created (single-touch only), fd=%d\n", uinput_fd);
-        fflush(stdout);
-    } else {
-        fprintf(stdout, "[INIT] FAILED: Could not create uinput device (errno=%d)\n", errno);
-        fflush(stdout);
+    // Take the mouse exclusively: MPC reads every input device through libinput and would
+    // otherwise also move its own (invisible) pointer and click on top of our touch events.
+    if (grab_mouse) {
+        if (ioctl(fd, EVIOCGRAB, 1) == 0) {
+            LOG("[INIT] Mouse grabbed, MPC no longer sees it directly\n");
+        } else {
+            LOG("[INIT] WARNING: could not grab the mouse (errno=%d), MPC may also act on it\n", errno);
+        }
     }
 
-    // Open real touchscreen for MT gesture injection
-    fprintf(stdout, "[INIT] Looking for the multi-touch screen...\n");
-    fflush(stdout);
-    touchscreen_fd = open_touchscreen_device();
-    if (touchscreen_fd >= 0) {
-        fprintf(stdout, "[INIT] SUCCESS: Real touchscreen opened for MT gestures, fd=%d\n", touchscreen_fd);
-        fflush(stdout);
+    if (uinput_fd >= 0) {
+        LOG("[INIT] Virtual touch screen ready, fd=%d\n", uinput_fd);
     } else {
-        fprintf(stdout, "[INIT] FAILED: Could not open touchscreen (errno=%d)\n", errno);
-        fflush(stdout);
+        LOG("[INIT] FAILED: no virtual touch screen (/dev/uinput), clicks and zoom are disabled\n");
     }
 
     // Initialize devices for button mappings
     if (num_button_mappings > 0) {
-        fprintf(stdout, "[INIT] Processing %d button mapping(s)...\n", num_button_mappings);
+        LOG("[INIT] Processing %d button mapping(s)...\n", num_button_mappings);
         fflush(stdout);
 
         // Check if we need keyboard device (for KEY mappings)
@@ -699,39 +788,39 @@ static void* input_monitor(void* arg)
 
         // Initialize keyboard if needed
         if (has_key_mappings) {
-            fprintf(stdout, "[INIT] Initializing keyboard device for KEY mappings...\n");
+            LOG("[INIT] Initializing keyboard device for KEY mappings...\n");
             fflush(stdout);
             keyboard_fd = init_uinput_keyboard();
             if (keyboard_fd >= 0) {
-                fprintf(stdout, "[INIT] SUCCESS: Keyboard device ready, fd=%d\n", keyboard_fd);
+                LOG("[INIT] SUCCESS: Keyboard device ready, fd=%d\n", keyboard_fd);
                 fflush(stdout);
             } else {
-                fprintf(stdout, "[INIT] FAILED: Could not create keyboard device (errno=%d)\n", errno);
+                LOG("[INIT] FAILED: Could not create keyboard device (errno=%d)\n", errno);
                 fflush(stdout);
             }
         }
 
         // Initialize MIDI sequencer if needed
         if (has_midi_mappings) {
-            fprintf(stdout, "[INIT] Initializing MIDI sequencer for MIDI_CC mappings...\n");
+            LOG("[INIT] Initializing MIDI sequencer for MIDI_CC mappings...\n");
             fflush(stdout);
             if (init_midi_sequencer() == 0) {
-                fprintf(stdout, "[INIT] SUCCESS: MIDI sequencer ready\n");
+                LOG("[INIT] SUCCESS: MIDI sequencer ready\n");
                 fflush(stdout);
             } else {
-                fprintf(stdout, "[INIT] FAILED: Could not initialize MIDI sequencer\n");
+                LOG("[INIT] FAILED: Could not initialize MIDI sequencer\n");
                 fflush(stdout);
             }
         }
     } else {
-        fprintf(stdout, "[INIT] No button mappings configured\n");
+        LOG("[INIT] No button mappings configured\n");
         fflush(stdout);
     }
 
     // Hardware button monitoring disabled (couldn't read from event1)
     // monitor_kbd_fd = open_keyboard_monitor();
     // if (monitor_kbd_fd >= 0) {
-    //     fprintf(stdout, "[INIT] Hardware button monitoring ENABLED - press hardware buttons to see their codes\n");
+    //     LOG("[INIT] Hardware button monitoring ENABLED - press hardware buttons to see their codes\n");
     //     fflush(stdout);
     // }
 
@@ -760,22 +849,22 @@ static void* input_monitor(void* arg)
                         cursor_x = 799; // Portrait width
                     position_changed = 1;
                 } else if (ev.code == REL_WHEEL) {
-                    // Mouse wheel -> pinch gesture (inject to real touchscreen)
-                    fprintf(stdout, "[WHEEL] Detected wheel event: value=%d, touchscreen_fd=%d, gesture_in_progress=%d\n",
-                            ev.value, touchscreen_fd, gesture_in_progress);
+                    // Mouse wheel -> pinch gesture (two fingers on the virtual touch screen)
+                    LOG("[WHEEL] Detected wheel event: value=%d, uinput_fd=%d, gesture_in_progress=%d\n",
+                            ev.value, uinput_fd, gesture_in_progress);
                     fflush(stdout);
 
-                    if (touchscreen_fd >= 0 && !gesture_in_progress) {
+                    if (uinput_fd >= 0 && !gesture_in_progress) {
                         if (ev.value > 0) {
                             // Scroll up = zoom in
-                            fprintf(stdout, "[WHEEL] Injecting ZOOM IN gesture to /dev/input/event0 at (%d, %d)\n", cursor_x, cursor_y);
+                            LOG("[WHEEL] Injecting ZOOM IN gesture at (%d, %d)\n", cursor_x, cursor_y);
                             fflush(stdout);
-                            animate_pinch_gesture(touchscreen_fd, cursor_x, cursor_y, 1);
+                            animate_pinch_gesture(uinput_fd, cursor_x, cursor_y, 1);
                         } else if (ev.value < 0) {
                             // Scroll down = zoom out
-                            fprintf(stdout, "[WHEEL] Injecting ZOOM OUT gesture to /dev/input/event0 at (%d, %d)\n", cursor_x, cursor_y);
+                            LOG("[WHEEL] Injecting ZOOM OUT gesture at (%d, %d)\n", cursor_x, cursor_y);
                             fflush(stdout);
-                            animate_pinch_gesture(touchscreen_fd, cursor_x, cursor_y, 0);
+                            animate_pinch_gesture(uinput_fd, cursor_x, cursor_y, 0);
                         }
                     }
                 }
@@ -786,29 +875,29 @@ static void* input_monitor(void* arg)
                 }
             } else if (ev.type == EV_KEY) {
                 // Mouse button events
-                fprintf(stdout, "[DEBUG] EV_KEY: code=%d value=%d\n", ev.code, ev.value);
+                LOG("[DEBUG] EV_KEY: code=%d value=%d\n", ev.code, ev.value);
                 fflush(stdout);
 
                 // Check if button has a mapping
                 struct button_mapping* mapping = get_button_mapping(ev.code);
-                fprintf(stdout, "[DEBUG] Button %d: mapping=%p\n", ev.code, (void*)mapping);
+                LOG("[DEBUG] Button %d: mapping=%p\n", ev.code, (void*)mapping);
                 fflush(stdout);
 
                 if (mapping != NULL) {
                     if (mapping->type == MAPPING_TYPE_KEY && keyboard_fd >= 0) {
                         // Send keyboard event
-                        fprintf(stdout, "[BUTTON] Button %d -> Key %d (pressed=%d)\n", ev.code, mapping->value, ev.value);
+                        LOG("[BUTTON] Button %d -> Key %d (pressed=%d)\n", ev.code, mapping->value, ev.value);
                         fflush(stdout);
                         send_key_event(keyboard_fd, mapping->value, ev.value);
                     } else if (mapping->type == MAPPING_TYPE_MIDI_CC) {
                         // Send MIDI CC event
-                        fprintf(stdout, "[BUTTON] Button %d -> MIDI CC %d (pressed=%d)\n", ev.code, mapping->value, ev.value);
+                        LOG("[BUTTON] Button %d -> MIDI CC %d (pressed=%d)\n", ev.code, mapping->value, ev.value);
                         fflush(stdout);
                         send_midi_cc(mapping->value, 127, ev.value);
                     }
                 } else if (ev.code == BTN_LEFT || ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) {
                     // No mapping, send as touch event (default behavior)
-                    fprintf(stdout, "[DEBUG] Sending as touch event\n");
+                    LOG("[DEBUG] Sending as touch event\n");
                     fflush(stdout);
                     if (uinput_fd >= 0) {
                         send_touch_event(uinput_fd, cursor_x, cursor_y, ev.value);
@@ -816,7 +905,7 @@ static void* input_monitor(void* arg)
                         // Track left button state for continuous drag
                         if (ev.code == BTN_LEFT) {
                             left_button_pressed = ev.value;
-                            fprintf(stdout, "[DEBUG] Left button %s\n", ev.value ? "PRESSED" : "RELEASED");
+                            LOG("[DEBUG] Left button %s\n", ev.value ? "PRESSED" : "RELEASED");
                             fflush(stdout);
                         }
                     }
@@ -835,9 +924,6 @@ static void* input_monitor(void* arg)
         ioctl(uinput_fd, UI_DEV_DESTROY);
         close(uinput_fd);
     }
-    if (touchscreen_fd >= 0) {
-        close(touchscreen_fd);
-    }
     if (keyboard_fd >= 0) {
         close(keyboard_fd);
     }
@@ -845,7 +931,305 @@ static void* input_monitor(void* arg)
     return NULL;
 }
 
-// Hook drmModeSetCursor2
+// ---- Atomic cursor -------------------------------------------------------------------------
+// MPC 3.9.x drives the display with atomic commits and, on every frame, switches off every
+// plane it does not use (FB_ID = 0, CRTC_ID = 0), including the hardware cursor plane. A cursor
+// enabled once through the legacy ioctls is therefore wiped at the next frame. So the cursor
+// plane's properties are added to MPC's own commit (drmModeAtomicCommit hook below), after its
+// entries, which keeps the plane on in the same atomic update.
+static uint32_t cursor_plane_id = 0;
+static uint32_t cursor_fb_id = 0;
+static uint32_t cursor_crtc_id = 0;
+static struct {
+    uint32_t fb_id, crtc_id, crtc_x, crtc_y, crtc_w, crtc_h, src_x, src_y, src_w, src_h;
+} cp;
+static volatile int atomic_cursor_ok = 0;
+static int atomic_failures = 0;
+static int (*real_atomic_add)(drmModeAtomicReqPtr, uint32_t, uint32_t, uint64_t) = NULL;
+
+// Property id (and current value) of a plane property, by name
+static uint32_t plane_property(int fd, uint32_t plane, const char* name, uint64_t* value)
+{
+    uint32_t id = 0;
+    drmModeObjectProperties* props = drmModeObjectGetProperties(fd, plane, DRM_MODE_OBJECT_PLANE);
+    for (uint32_t i = 0; props && i < props->count_props && !id; i++) {
+        drmModePropertyRes* prop = drmModeGetProperty(fd, props->props[i]);
+        if (prop && strcmp(prop->name, name) == 0) {
+            id = prop->prop_id;
+            if (value) {
+                *value = props->prop_values[i];
+            }
+        }
+        drmModeFreeProperty(prop);
+    }
+    drmModeFreeObjectProperties(props);
+    return id;
+}
+
+// Find the cursor-type plane usable with this CRTC and wrap our cursor buffer in a framebuffer
+static void setup_atomic_cursor(int fd, uint32_t crtcId)
+{
+    drmModeRes* res = drmModeGetResources(fd);
+    drmModePlaneRes* planes = drmModeGetPlaneResources(fd);
+    int crtc_index = -1;
+
+    for (int i = 0; res && i < res->count_crtcs; i++) {
+        if (res->crtcs[i] == crtcId) {
+            crtc_index = i;
+        }
+    }
+    for (uint32_t i = 0; planes && crtc_index >= 0 && i < planes->count_planes && !cursor_plane_id; i++) {
+        drmModePlane* plane = drmModeGetPlane(fd, planes->planes[i]);
+        uint64_t type = 99;
+        if (plane && (plane->possible_crtcs & (1u << crtc_index))) {
+            int argb = 0;
+            plane_property(fd, plane->plane_id, "type", &type);
+            for (uint32_t k = 0; k < plane->count_formats; k++) {
+                if (plane->formats[k] == DRM_FORMAT_ARGB8888) {
+                    argb = 1;
+                }
+            }
+            if (type == 2 /* DRM_PLANE_TYPE_CURSOR */ && argb) {
+                cursor_plane_id = plane->plane_id;
+            }
+        }
+        drmModeFreePlane(plane);
+    }
+    if (planes) {
+        drmModeFreePlaneResources(planes);
+    }
+    if (res) {
+        drmModeFreeResources(res);
+    }
+    if (!cursor_plane_id) {
+        LOG("[BOOT] No cursor plane found, only the legacy cursor path is available\n");
+        return;
+    }
+
+    cp.fb_id = plane_property(fd, cursor_plane_id, "FB_ID", NULL);
+    cp.crtc_id = plane_property(fd, cursor_plane_id, "CRTC_ID", NULL);
+    cp.crtc_x = plane_property(fd, cursor_plane_id, "CRTC_X", NULL);
+    cp.crtc_y = plane_property(fd, cursor_plane_id, "CRTC_Y", NULL);
+    cp.crtc_w = plane_property(fd, cursor_plane_id, "CRTC_W", NULL);
+    cp.crtc_h = plane_property(fd, cursor_plane_id, "CRTC_H", NULL);
+    cp.src_x = plane_property(fd, cursor_plane_id, "SRC_X", NULL);
+    cp.src_y = plane_property(fd, cursor_plane_id, "SRC_Y", NULL);
+    cp.src_w = plane_property(fd, cursor_plane_id, "SRC_W", NULL);
+    cp.src_h = plane_property(fd, cursor_plane_id, "SRC_H", NULL);
+    if (!cp.fb_id || !cp.crtc_id || !cp.crtc_x || !cp.crtc_y || !cp.crtc_w || !cp.crtc_h || !cp.src_x || !cp.src_y
+        || !cp.src_w || !cp.src_h) {
+        LOG("[BOOT] Cursor plane %u lacks a standard property, atomic cursor off\n", cursor_plane_id);
+        return;
+    }
+
+    uint32_t handles[4] = { cursor_bo, 0, 0, 0 };
+    uint32_t pitches[4] = { cursor_pitch, 0, 0, 0 };
+    uint32_t offsets[4] = { 0, 0, 0, 0 };
+    if (drmModeAddFB2(fd, 64, 64, DRM_FORMAT_ARGB8888, handles, pitches, offsets, &cursor_fb_id, 0) != 0) {
+        LOG("[BOOT] drmModeAddFB2 for the cursor failed (errno=%d), atomic cursor off\n", errno);
+        return;
+    }
+    cursor_crtc_id = crtcId;
+    atomic_cursor_ok = 1;
+    LOG("[BOOT] Atomic cursor ready: plane %u, fb %u, pitch %u\n", cursor_plane_id, cursor_fb_id, cursor_pitch);
+}
+
+static void atomic_add(drmModeAtomicReqPtr req, uint32_t prop, uint64_t value)
+{
+    if (!real_atomic_add) {
+        real_atomic_add = dlsym(RTLD_NEXT, "drmModeAtomicAddProperty");
+    }
+    if (real_atomic_add) {
+        real_atomic_add(req, cursor_plane_id, prop, value);
+    }
+}
+
+// Show our cursor on the CRTC through the real libdrm. The cursor ioctls need a DRM master
+// fd, which is why this runs on the fd MPC itself opened.
+static int show_cursor(int fd, uint32_t crtcId)
+{
+    static int (*real_drmModeSetCursor2)(int, uint32_t, uint32_t, uint32_t, uint32_t, int32_t, int32_t) = NULL;
+    int (*real_drmModeMoveCursor)(int, uint32_t, int, int);
+
+    if (cursor_bo == 0) {
+        return -1;
+    }
+    if (!real_drmModeSetCursor2) {
+        real_drmModeSetCursor2 = dlsym(RTLD_NEXT, "drmModeSetCursor2");
+    }
+    if (!real_drmModeSetCursor2) {
+        return -1;
+    }
+
+    int ret = real_drmModeSetCursor2(fd, crtcId, cursor_bo, 64, 64, cursor_hot_x, cursor_hot_y);
+
+    // Initially position the cursor
+    real_drmModeMoveCursor = dlsym(RTLD_NEXT, "drmModeMoveCursor");
+    if (real_drmModeMoveCursor) {
+        real_drmModeMoveCursor(fd, crtcId, cursor_x, cursor_y);
+    }
+    return ret;
+}
+
+// Start the cursor and the input thread, once, from whichever entry point comes first.
+static void start_addon(int fd, uint32_t crtcId)
+{
+    if (!__sync_bool_compare_and_swap(&addon_started, 0, 1)) {
+        return;
+    }
+
+    init_cursor(fd, crtcId);
+    if (cursor_bo != 0) {
+        setup_atomic_cursor(fd, crtcId);
+    }
+
+    // Start input monitor thread
+    if (!input_running) {
+        input_running = 1;
+        pthread_create(&input_thread, NULL, input_monitor, NULL);
+    }
+
+    if (show_cursor(fd, crtcId) == 0) {
+        LOG("[BOOT] Cursor shown on crtc %u (drm fd %d)\n", crtcId, fd);
+    } else {
+        LOG("[BOOT] Could not show the cursor on crtc %u (drm fd %d, errno=%d)\n", crtcId, fd, errno);
+    }
+}
+
+// Firmware 3.9.x no longer calls drmModeSetCursor*, so the addon cannot wait for MPC to ask
+// for the cursor to be hidden. Instead find the DRM device MPC already opened: the fd that
+// belongs to a /dev/dri/card* with an active CRTC.
+static int find_drm_fd(uint32_t* crtc_out)
+{
+    DIR* dir = opendir("/proc/self/fd");
+    struct dirent* de;
+    int found = -1;
+
+    if (!dir) {
+        return -1;
+    }
+    while (found < 0 && (de = readdir(dir)) != NULL) {
+        char link[300], target[128];
+        int fd = atoi(de->d_name);
+        snprintf(link, sizeof link, "/proc/self/fd/%s", de->d_name);
+        ssize_t n = readlink(link, target, sizeof(target) - 1);
+        if (fd <= 2 || n <= 0) {
+            continue;
+        }
+        target[n] = '\0';
+        if (strncmp(target, "/dev/dri/card", 13) != 0) {
+            continue;
+        }
+        drmModeRes* res = drmModeGetResources(fd);
+        if (!res) {
+            continue;
+        }
+        for (int i = 0; i < res->count_crtcs && found < 0; i++) {
+            drmModeCrtc* crtc = drmModeGetCrtc(fd, res->crtcs[i]);
+            if (crtc && crtc->mode_valid) {
+                *crtc_out = res->crtcs[i];
+                found = fd;
+            }
+            drmModeFreeCrtc(crtc);
+        }
+        drmModeFreeResources(res);
+    }
+    closedir(dir);
+    return found;
+}
+
+// Crash-loop guard. The library lives inside MPC: if MPC dies shortly after we started, a
+// restart with the library would likely die again, and after a few rapid restarts systemd gives
+// up (no display, and no touch to recover with). The marker file is created at every start and
+// removed after a clean exit or once MPC has run for GUARD_SETTLE_SECONDS. A start that finds a
+// marker younger than GUARD_WINDOW_SECONDS leaves the addon off for that run.
+#define GUARD_PATH "/dev/shm/.mouseCursor.guard"
+#define GUARD_WINDOW_SECONDS 45
+#define GUARD_SETTLE_SECONDS 30
+static int guard_owner = 0;
+
+static int is_mpc_process(void)
+{
+    char path[256];
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (n <= 0) {
+        return 0;
+    }
+    path[n] = '\0';
+    const char* base = strrchr(path, '/');
+    return strcmp(base ? base + 1 : path, "MPC") == 0;
+}
+
+static int guard_tripped(void)
+{
+    struct stat st;
+    return stat(GUARD_PATH, &st) == 0 && time(NULL) - st.st_mtime < GUARD_WINDOW_SECONDS;
+}
+
+static void guard_release(void)
+{
+    if (guard_owner) {
+        unlink(GUARD_PATH);
+        guard_owner = 0;
+    }
+}
+
+static void* bootstrap_thread(void* arg)
+{
+    (void)arg;
+    uint32_t crtc = 0;
+
+    for (int i = 0; i < 600 && !addon_started; i++) { // up to 60 s for MPC to bring the display up
+        int fd = find_drm_fd(&crtc);
+        if (fd >= 0) {
+            start_addon(fd, crtc);
+            break;
+        }
+        usleep(100000);
+    }
+    if (!addon_started) {
+        LOG("[BOOT] No active DRM device found in this process, cursor not started\n");
+    }
+
+    sleep(GUARD_SETTLE_SECONDS);
+    guard_release();
+    return NULL;
+}
+
+__attribute__((constructor)) static void force_mouse_init(void)
+{
+    if (!is_mpc_process()) {
+        return; // LD_PRELOAD also reaches every child of MPC
+    }
+    if (guard_tripped()) {
+        LOG("[GUARD] MPC restarted within %d s of the previous start, mouse addon off for this run (remove %s to override)\n",
+            GUARD_WINDOW_SECONDS, GUARD_PATH);
+        return;
+    }
+    int g = open(GUARD_PATH, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0644);
+    if (g >= 0) {
+        close(g);
+        guard_owner = 1;
+    }
+
+    // The virtual touch screen has to exist before MPC builds its libinput context
+    uinput_fd = init_uinput();
+    if (uinput_fd >= 0) {
+        usleep(300000); // let udev tag it as a touchscreen
+    }
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, bootstrap_thread, NULL) == 0) {
+        pthread_detach(thread);
+    }
+}
+
+__attribute__((destructor)) static void force_mouse_exit(void)
+{
+    guard_release(); // clean exit: the next start is not a crash restart
+}
+
+// Hook drmModeSetCursor2 (older firmware: MPC calls it with bo_handle 0 to hide the cursor)
 int drmModeSetCursor2(int fd, uint32_t crtcId, uint32_t bo_handle,
     uint32_t width, uint32_t height,
     int32_t hot_x, int32_t hot_y)
@@ -857,26 +1241,10 @@ int drmModeSetCursor2(int fd, uint32_t crtcId, uint32_t bo_handle,
     }
 
     if (bo_handle == 0) {
-        if (!cursor_initialized) {
-            init_cursor(fd, crtcId);
-
-            // Start input monitor thread
-            if (!input_running) {
-                input_running = 1;
-                pthread_create(&input_thread, NULL, input_monitor, NULL);
-            }
-        }
-
-        if (cursor_bo != 0 && real_drmModeSetCursor2) {
-            int ret = real_drmModeSetCursor2(fd, crtcId, cursor_bo, 64, 64, 0, 0);
-
-            // Initially position the cursor
-            int (*real_drmModeMoveCursor)(int, uint32_t, int, int) = dlsym(RTLD_NEXT, "drmModeMoveCursor");
-            if (real_drmModeMoveCursor) {
-                real_drmModeMoveCursor(fd, crtcId, cursor_x, cursor_y);
-            }
-
-            return ret;
+        // Show our cursor instead of hiding it
+        start_addon(fd, crtcId);
+        if (cursor_bo != 0) {
+            return show_cursor(fd, crtcId);
         }
         return 0;
     }
@@ -886,6 +1254,68 @@ int drmModeSetCursor2(int fd, uint32_t crtcId, uint32_t bo_handle,
         return real_drmModeSetCursor2(fd, crtcId, bo_handle, width, height, hot_x, hot_y);
     }
     return 0;
+}
+
+// Hook drmModeAtomicAddProperty: only to log what MPC writes on the cursor plane, a few times
+int drmModeAtomicAddProperty(drmModeAtomicReqPtr req, uint32_t object_id, uint32_t property_id, uint64_t value)
+{
+    static int logged = 0;
+
+    if (!real_atomic_add) {
+        real_atomic_add = dlsym(RTLD_NEXT, "drmModeAtomicAddProperty");
+    }
+    if (cursor_plane_id && object_id == cursor_plane_id && logged < 24) {
+        logged++;
+        LOG("[ATOMIC] MPC sets cursor plane %u: property %u = %llu\n", object_id, property_id, (unsigned long long)value);
+    }
+    return real_atomic_add ? real_atomic_add(req, object_id, property_id, value) : -1;
+}
+
+// Hook drmModeAtomicCommit: add the cursor plane to every real commit MPC makes. If the kernel
+// rejects the commit but accepts MPC's own request, our plane was the problem: log it and stop
+// injecting after a few of those, so a bad cursor can never break MPC's display.
+int drmModeAtomicCommit(int fd, drmModeAtomicReqPtr req, uint32_t flags, void* user_data)
+{
+    static int (*real_drmModeAtomicCommit)(int, drmModeAtomicReqPtr, uint32_t, void*) = NULL;
+
+    if (!real_drmModeAtomicCommit) {
+        real_drmModeAtomicCommit = dlsym(RTLD_NEXT, "drmModeAtomicCommit");
+    }
+    if (!real_drmModeAtomicCommit) {
+        return -1;
+    }
+    if (!atomic_cursor_ok || fd != saved_fd || (flags & DRM_MODE_ATOMIC_TEST_ONLY)) {
+        return real_drmModeAtomicCommit(fd, req, flags, user_data);
+    }
+
+    int saved = drmModeAtomicGetCursor(req);
+    atomic_add(req, cp.fb_id, cursor_fb_id);
+    atomic_add(req, cp.crtc_id, cursor_crtc_id);
+    atomic_add(req, cp.crtc_x, (uint64_t)(int64_t)(cursor_x - cursor_hot_x));
+    atomic_add(req, cp.crtc_y, (uint64_t)(int64_t)(cursor_y - cursor_hot_y));
+    atomic_add(req, cp.crtc_w, 64);
+    atomic_add(req, cp.crtc_h, 64);
+    atomic_add(req, cp.src_x, 0);
+    atomic_add(req, cp.src_y, 0);
+    atomic_add(req, cp.src_w, 64 << 16);
+    atomic_add(req, cp.src_h, 64 << 16);
+    int ret = real_drmModeAtomicCommit(fd, req, flags, user_data);
+    int err = errno;
+    drmModeAtomicSetCursor(req, saved); // leave MPC's request as it was
+
+    if (ret != 0) {
+        int retry = real_drmModeAtomicCommit(fd, req, flags, user_data);
+        if (retry == 0) {
+            LOG("[ATOMIC] Commit with the cursor failed (ret=%d errno=%d) but MPC's own succeeded (%d/3)\n", ret, err,
+                atomic_failures + 1);
+            if (++atomic_failures >= 3) {
+                atomic_cursor_ok = 0;
+                LOG("[ATOMIC] Atomic cursor disabled\n");
+            }
+        }
+        return retry;
+    }
+    return ret;
 }
 
 // Hook drmModeSetCursor
@@ -950,19 +1380,19 @@ static int read_params_file(const char* path, char** out_str, float* out_val)
 
     /* ----- additional lines (button mappings) ----- */
     num_button_mappings = 0;
-    fprintf(stdout, "[CONFIG] Starting to parse button mappings...\n");
+    LOG("[CONFIG] Starting to parse button mappings...\n");
     fflush(stdout);
     while (fgets(line, sizeof line, fp) && num_button_mappings < MAX_BUTTON_MAPPINGS) {
         // Strip newline
         len = strcspn(line, "\r\n");
         line[len] = '\0';
 
-        fprintf(stdout, "[CONFIG] Read line: '%s'\n", line);
+        LOG("[CONFIG] Read line: '%s'\n", line);
         fflush(stdout);
 
         // Skip empty lines and comments
         if (len == 0 || line[0] == '#') {
-            fprintf(stdout, "[CONFIG] Skipping (empty or comment)\n");
+            LOG("[CONFIG] Skipping (empty or comment)\n");
             fflush(stdout);
             continue;
         }
@@ -981,10 +1411,22 @@ static int read_params_file(const char* path, char** out_str, float* out_val)
         while (*button_str == ' ' || *button_str == '\t') button_str++;
         while (*value_str == ' ' || *value_str == '\t') value_str++;
 
+        // Options (not button mappings)
+        if (strcasecmp(button_str, "GRAB") == 0) {
+            grab_mouse = atoi(value_str) != 0;
+            LOG("[CONFIG] GRAB=%d\n", grab_mouse);
+            continue;
+        }
+        if (strcasecmp(button_str, "CURSOR_ROTATE") == 0) {
+            cursor_rotate = atoi(value_str);
+            LOG("[CONFIG] CURSOR_ROTATE=%d\n", cursor_rotate);
+            continue;
+        }
+
         // Parse button code
         int button_code = parse_code(button_str, button_names);
         if (button_code < 0) {
-            fprintf(stdout, "[CONFIG] Warning: Invalid button '%s' (skipped)\n", button_str);
+            LOG("[CONFIG] Warning: Invalid button '%s' (skipped)\n", button_str);
             fflush(stdout);
             continue;
         }
@@ -997,12 +1439,12 @@ static int read_params_file(const char* path, char** out_str, float* out_val)
                 button_mappings[num_button_mappings].button_code = button_code;
                 button_mappings[num_button_mappings].type = MAPPING_TYPE_MIDI_CC;
                 button_mappings[num_button_mappings].value = cc_number;
-                fprintf(stdout, "[CONFIG] Button mapping: %s (%d) -> MIDI CC %d\n",
+                LOG("[CONFIG] Button mapping: %s (%d) -> MIDI CC %d\n",
                         button_str, button_code, cc_number);
                 fflush(stdout);
                 num_button_mappings++;
             } else {
-                fprintf(stdout, "[CONFIG] Warning: Invalid MIDI CC number '%s' (must be 0-127)\n",
+                LOG("[CONFIG] Warning: Invalid MIDI CC number '%s' (must be 0-127)\n",
                         value_str);
                 fflush(stdout);
             }
@@ -1013,12 +1455,12 @@ static int read_params_file(const char* path, char** out_str, float* out_val)
                 button_mappings[num_button_mappings].button_code = button_code;
                 button_mappings[num_button_mappings].type = MAPPING_TYPE_KEY;
                 button_mappings[num_button_mappings].value = key_code;
-                fprintf(stdout, "[CONFIG] Button mapping: %s (%d) -> KEY %s (%d)\n",
+                LOG("[CONFIG] Button mapping: %s (%d) -> KEY %s (%d)\n",
                         button_str, button_code, value_str, key_code);
                 fflush(stdout);
                 num_button_mappings++;
             } else {
-                fprintf(stdout, "[CONFIG] Warning: Invalid key '%s' (skipped)\n", value_str);
+                LOG("[CONFIG] Warning: Invalid key '%s' (skipped)\n", value_str);
                 fflush(stdout);
             }
         }

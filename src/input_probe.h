@@ -71,6 +71,11 @@ static inline int probe_match_name(int fd, const char* name, const void* arg)
     return strcmp(name, (const char*)arg) == 0;
 }
 
+static inline int probe_match_mouse_named(int fd, const char* name, const void* arg)
+{
+    return strstr(name, (const char*)arg) != NULL && probe_is_mouse(fd, name);
+}
+
 // First /dev/input/eventN accepted by match(). Returns 0 and fills path/name, or -1.
 static inline int probe_find(probe_match_fn match, const void* arg, char* path, size_t path_len,
     char* name_out, size_t name_len)

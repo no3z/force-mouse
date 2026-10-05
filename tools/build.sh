@@ -16,12 +16,16 @@ compile() {
     local cflags="-O2 -Wall -Wextra -march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard"
     arm-linux-gnueabihf-gcc -shared -fPIC $cflags \
         -I/usr/include/libdrm -I/usr/include/arm-linux-gnueabihf \
-        -o build/libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound
-    arm-linux-gnueabihf-gcc $cflags -o build/probe_inputs tools/probe_inputs.c
-    arm-linux-gnueabihf-strip build/libforce_cursor.so build/probe_inputs
+        -o build/libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound -ldrm
+    for tool in probe_inputs evdump fake_mouse; do
+        arm-linux-gnueabihf-gcc $cflags -o "build/$tool" "tools/$tool.c"
+    done
+    arm-linux-gnueabihf-gcc $cflags -I/usr/include/libdrm -I/usr/include/arm-linux-gnueabihf \
+        -o build/drm_planes tools/drm_planes.c -ldrm
+    arm-linux-gnueabihf-strip build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes
 
     echo "--- checks"
-    for f in build/libforce_cursor.so build/probe_inputs; do
+    for f in build/libforce_cursor.so build/probe_inputs build/evdump build/fake_mouse build/drm_planes; do
         arm-linux-gnueabihf-readelf -h "$f" | grep -E 'Class:|Machine:' | tr -s ' ' | sed "s|^|$f: |"
         arm-linux-gnueabihf-readelf -d "$f" | grep NEEDED | sed "s|^|$f: |"
         local highest
@@ -42,8 +46,10 @@ stage() {
     rm -rf "$dest"
     mkdir -p "$dest"
     cp addon/manage.sh addon/run_mouseCursor.sh addon/device.txt addon/README.txt addon/VERSION "$dest/"
-    cp build/libforce_cursor.so build/probe_inputs "$dest/"
-    chmod +x "$dest/manage.sh" "$dest/run_mouseCursor.sh" "$dest/probe_inputs"
+    cp build/libforce_cursor.so "$dest/"
+    mkdir -p "$dest/tools"
+    cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes "$dest/tools/"
+    chmod +x "$dest/manage.sh" "$dest/run_mouseCursor.sh" "$dest"/tools/*
     rm -f "dist/force-mouse-${version}-armv7.zip"
     (cd dist && zip -qr "force-mouse-${version}-armv7.zip" mouseCursor)
     (cd dist && sha256sum "force-mouse-${version}-armv7.zip" mouseCursor/libforce_cursor.so | tee SHA256SUMS)

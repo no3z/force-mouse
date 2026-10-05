@@ -58,14 +58,14 @@ mkdir -p "\$D"
 # keep the previous library for a quick rollback and the user's configuration
 [ -f "\$D/libforce_cursor.so" ] && cp -f "\$D/libforce_cursor.so" "\$D/libforce_cursor.so.prev"
 [ -f "\$D/device.txt" ] && cp -f "\$D/device.txt" /tmp/mouseCursor.device.keep
-cp -f /tmp/force-mouse-stage/mouseCursor/* "\$D/"
+cp -rf /tmp/force-mouse-stage/mouseCursor/* "\$D/"
 if [ -f /tmp/mouseCursor.device.keep ]; then
     cp -f "\$D/device.txt" "\$D/device.txt.default"
     cp -f /tmp/mouseCursor.device.keep "\$D/device.txt"
     rm -f /tmp/mouseCursor.device.keep
     echo "kept existing device.txt (new default saved as device.txt.default)"
 fi
-chmod +x "\$D/manage.sh" "\$D/run_mouseCursor.sh" "\$D/probe_inputs" 2>/dev/null || true
+chmod +x "\$D/manage.sh" "\$D/run_mouseCursor.sh" "\$D"/tools/* 2>/dev/null || true
 rm -rf /tmp/force-mouse-stage
 sync
 echo "installed in \$D"
