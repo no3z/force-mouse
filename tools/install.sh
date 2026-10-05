@@ -29,7 +29,9 @@ STAGE="$ROOT/dist/mouseCursor"
 [ -f "$STAGE/libforce_cursor.so" ] || { echo "dist/mouseCursor not found, run tools/build.sh first" >&2; exit 1; }
 
 SD=/media/662522
-SSH=(ssh -o ConnectTimeout=8 "root@$HOST")
+# FORCE_SSH_OPTS adds ssh options, e.g. FORCE_SSH_OPTS="-o PreferredAuthentications=password"
+read -r -a EXTRA_SSH_OPTS <<<"${FORCE_SSH_OPTS:-}"
+SSH=(ssh -o ConnectTimeout=8 "${EXTRA_SSH_OPTS[@]}" "root@$HOST")
 
 echo "Target: root@$HOST ($SD/AddOns/mouseCursor)"
 "${SSH[@]}" "test -d $SD/MockbaMod && test -d $SD/AddOns" \

@@ -12,8 +12,8 @@ echo ""
 echo "Press different buttons on your mouse..."
 echo ""
 
-# Replace event2 with your mouse device
-MOUSE_DEVICE="/dev/input/event2"
+# Usage: bash test_mouse_buttons.sh [/dev/input/eventN]   (run probe_inputs to find your mouse)
+MOUSE_DEVICE="${1:-/dev/input/event2}"
 
 if [ ! -e "$MOUSE_DEVICE" ]; then
     echo "Error: $MOUSE_DEVICE not found"
