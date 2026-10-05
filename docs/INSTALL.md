@@ -1,7 +1,7 @@
 # Build and install
 
-> Check [COMPATIBILITY.md](COMPATIBILITY.md) first: on Force firmware 3.9.1.2 the addon loads but
-> its hooks never fire.
+> Check [COMPATIBILITY.md](COMPATIBILITY.md) for what is verified on which firmware. A bug inside
+> MPC's process can take the display down, so the addon has a crash-loop guard (see below).
 
 ## Requirements
 
@@ -18,9 +18,9 @@ tools/build.sh
 The first run builds `force-mouse-builder:bookworm` from `tools/Dockerfile` (Debian bookworm,
 `gcc-arm-linux-gnueabihf`, `libdrm-dev:armhf`, `libasound2-dev:armhf`). Then it compiles and checks:
 
-- `build/libforce_cursor.so` and `build/probe_inputs`: ELF32 ARM, hard-float
+- `build/libforce_cursor.so` and the tools: ELF32 ARM, hard-float
   (`-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard`), stripped
-- needed libraries: `libasound.so.2` and `libc.so.6` (MPC already has `libdrm` and `libasound`
+- needed libraries: `libasound.so.2`, `libdrm.so.2` and `libc.so.6` (MPC already has the first two
   loaded)
 - the highest glibc symbol must be <= 2.36 (the Force runs 2.39); the build fails otherwise
 
@@ -38,7 +38,7 @@ Manual build, without the script:
 arm-linux-gnueabihf-gcc -shared -fPIC -O2 -Wall -Wextra \
   -I/usr/include/libdrm -I/usr/include/arm-linux-gnueabihf \
   -march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard \
-  -o libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound
+  -o libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound -ldrm
 ```
 
 ## Install with the script
@@ -97,8 +97,22 @@ ssh root@<force-ip> '
 The journal unit is `acvs` (`systemctl status acvs`). The `inmusic-mpc` name used by some other
 addons' `manage.sh` does not exist on firmware 3.9.1.2.
 
-`dist/mouseCursor/probe_inputs` can be run on the Force at any time to see which event node would
-be used for the mouse, the touchscreen and key injection.
+On-device tools are installed in `/media/662522/AddOns/mouseCursor/tools/`:
+
+```sh
+tools/probe_inputs                      # which event node is used for the mouse and key injection
+tools/drm_planes /dev/dri/card1         # CRTC and planes: types, formats, state
+tools/evdump /dev/input/eventN 10       # print the events of a device for 10 s (evtest is not installed)
+tools/fake_mouse                        # virtual mouse driven by a FIFO, for testing without hardware
+```
+
+Cursor plane state, without looking at the screen:
+
+```sh
+awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/1/state | grep -E 'crtc=|fb=|crtc-pos'
+```
+
+`crtc=crtc-0` with a 64x64 `AR24` framebuffer means the cursor is on; `crtc-pos` follows the mouse.
 
 ## Disable, uninstall, roll back
 
@@ -107,6 +121,9 @@ ssh root@<force-ip> 'sh /media/662522/AddOns/mouseCursor/manage.sh DISABLE'
 ```
 
 `DISABLE` removes the run script, the RAM configuration and the entry in `/dev/shm/.LD_PRELOAD`,
-then restarts the application (before 2.1.0 the preload entry stayed until a reboot). To remove
+then restarts the application (before 2.1.0 the preload entry stayed until a reboot).
+
+If the Force shows nothing after a bad build, SSH in (sshd does not depend on MPC) and run the
+command above, then `systemctl reset-failed acvs; systemctl restart acvs`. To remove
 the files too, delete `/media/662522/AddOns/mouseCursor` afterwards. To roll back a bad build,
 copy `libforce_cursor.so.prev` over `libforce_cursor.so` and restart the application.

@@ -46,6 +46,10 @@ does not rerun `touch-fw-update.service`.
 Not measured: how often it happens (the journal only keeps the current boot) and what a good boot
 looks like on the same unit.
 
+**What the addon does about it.** Since 3.0.0 the addon sends clicks, drags and the zoom gesture
+through its own virtual touch screen, so a Force whose physical touch controller did not load can
+still be driven with a mouse. It does not fix the controller: see below.
+
 ## Hypotheses, most likely first
 
 1. **Contact on the display/touch flat cable (FFC) or connector.** The classic cause of a touch
@@ -70,7 +74,7 @@ looks like on the same unit.
 journalctl -b -u touch-fw-update --no-pager        # "no supported touch panel installed" = bad boot
 ls /sys/bus/i2c/devices/                           # 4-0026 or 4-0041 present = good boot
 grep -E '^(N|H):' /proc/bus/input/devices          # a touch device should be listed
-/media/662522/AddOns/mouseCursor/probe_inputs      # abs_mt=1 on one node = touchscreen present
+/media/662522/AddOns/mouseCursor/tools/probe_inputs   # abs_mt=1 on a node other than 'Virtual Mouse Touch' = physical touchscreen present
 ```
 
 The raw I2C probe (read-only; bus 4 had only the touch controller on the tested unit):

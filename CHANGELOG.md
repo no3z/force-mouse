@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.0.0 - 2026-10-05
+
+Rework for Force firmware 3.9.1.2, where versions before 3.0.0 did nothing (MPC no longer calls the
+legacy `drmModeSetCursor*` functions the addon hooked; see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)).
+
+- Starts from a library constructor inside MPC, finds the DRM fd MPC opened, and still keeps the old
+  hook path for firmware that uses it.
+- The cursor plane is added to every real `drmModeAtomicCommit` MPC makes (MPC switches it off on each
+  commit), with automatic fallback if the kernel rejects it.
+- Clicks, drags and the wheel pinch go through a virtual multi-touch screen created before MPC builds
+  its libinput context (`INPUT_PROP_DIRECT`, MT protocol B), so they work without the physical touch
+  controller. The mouse is grabbed exclusively (`GRAB`, default 1).
+- `CURSOR_ROTATE` (default 270) with a hot spot that follows the arrow tip; `name:<text>` for the mouse
+  line of `device.txt`.
+- Crash-loop guard (`/dev/shm/.mouseCursor.guard`).
+- New tools: `drm_planes`, `evdump`, `fake_mouse`; the library links `libdrm` explicitly.
+- Verified with a synthetic mouse at the DRM-state and input-event level; the on-screen result still
+  needs confirmation on the device.
+
 ## 2.1.0 - 2026-10-05
 
 Changes relative to the 2.0 sources of January 2026 (imported unchanged in the first commit):

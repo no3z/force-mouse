@@ -5,10 +5,13 @@ The addon reads `/dev/shm/.mouseCursor`, a plain text **file** (not a directory)
 the SD card and restart the Force application; changes made in RAM are lost at the next start.
 
 ```
-LINE 1   mouse device: "auto" or a path such as /dev/input/event2
+LINE 1   mouse device: "auto", "name:<text>" or a path such as /dev/input/event2
 LINE 2   speed multiplier, 0.1 to 5.0 (default 1.0 if missing or out of range)
-LINE 3+  optional button mappings, "BTN_NAME=KEY_NAME", "BTN_NAME=0xHEX" or "BTN_NAME=MIDI_CC_n"
-         empty lines and lines starting with # are ignored; at most 16 mappings
+LINE 3+  optional options and button mappings; empty lines and lines starting with # are ignored
+           GRAB=0|1               exclusive mouse grab (default 1)
+           CURSOR_ROTATE=0|90|180|270   cursor bitmap rotation (default 270)
+           BTN_NAME=KEY_NAME | BTN_NAME=0xHEX | BTN_NAME=MIDI_CC_n   at most 16 mappings
+         write options without spaces around the = sign
 ```
 
 ## Line 1: the mouse device
@@ -16,7 +19,8 @@ LINE 3+  optional button mappings, "BTN_NAME=KEY_NAME", "BTN_NAME=0xHEX" or "BTN
 `auto` (recommended) picks the first `/dev/input/eventN` that has `REL_X`, `REL_Y` and `BTN_LEFT`,
 ignoring the virtual devices on the Force (`Amit's Input Provider`, `Virtual Mouse Touch`).
 
-A fixed path still works, but the event numbers depend on which devices exist at boot. With the
+`name:Trackball` picks the first mouse whose name contains the text, which is useful with several
+mice. A fixed path still works, but the event numbers depend on which devices exist at boot. With the
 touchscreen present the Force has `event0` touch, `event1` gpio-keys, `event2` mouse, `event3`
 Amit's Input Provider. When the touch controller does not load, they become `event0` gpio-keys,
 `event1` mouse, `event2` Amit's Input Provider, so `/dev/input/event2` would be the keyboard
@@ -99,8 +103,18 @@ BTN_BACK=MIDI_CC_75
 BTN_RIGHT=MIDI_CC_98
 ```
 
+## Options
+
+**GRAB** (default 1). The mouse is grabbed exclusively so MPC, which reads every input device
+through libinput, does not also move its own invisible pointer and click on top of the addon's touch
+events. `GRAB=0` leaves the mouse to MPC as well.
+
+**CURSOR_ROTATE** (default 270). The panel is portrait while MPC draws its interface rotated by 90
+degrees, so the arrow bitmap is turned to look upright; the active point follows the tip. If the
+arrow looks wrong on your Force try 0, 90, 180 or 270 and restart the application. This default
+was derived from the coordinate mapping, not seen on the screen.
+
 ## Mouse wheel
 
-Wheel up injects a two-finger zoom-in, wheel down a zoom-out, at the cursor position, into the
-**real multi-touch screen** (it needs one; see [ARCHITECTURE.md](ARCHITECTURE.md)). There is no
-configuration for it.
+Wheel up sends a two-finger zoom-in, wheel down a zoom-out, at the cursor position, through the
+addon's virtual touch screen (no physical touchscreen needed). There is no configuration for it.

@@ -2,30 +2,21 @@
 
 ## Summary
 
-| Force firmware | Build | Library loads in MPC | Hook entry point fires | Mouse works through this addon |
-|---|---|---|---|---|
-| January 2026 (original folder named "3.7") | yes | yes | yes (per original notes) | yes (per original notes) |
-| 3.9.1.2 | yes | yes | **no** | **no** (MPC handles the mouse itself, see below) |
+| Force firmware | Status |
+|---|---|
+| **3.9.1.2** (MockbaMod 4.51, OS az0x 5.0.17, kernel 6.18.26-az01-rt4) | Supported since 3.0.0. Loads, shows the cursor plane and emits touch events; verified with a synthetic mouse at the DRM-state and input-event level (see [Verification](#verification)). The on-screen result (look and orientation of the cursor, whether MPC acts on the touches) needs confirmation on the device. |
+| Firmware of January 2026 (the original working folder is named "3.7") | The original hook path (`drmModeSetCursor2`) is still in the code. Worked at the time per the original notes; not re-tested with 3.0.0. |
 
-The 3.9.1.2 row was measured on 2026-10-05 on a Force with:
+The 3.9.1.2 measurements were taken on 2026-10-05 on a Force with glibc 2.39, `libdrm.so.2.4.0`,
+`libasound.so.2.0.0`, `libinput.so.10.13.0` and a Microsoft Trackball Explorer on the Force's USB hub.
 
-- MPC 3.9.1.2, MockbaMod 4.51
-- OS `az0x 5.0.17 (scarthgap)`, kernel `6.18.26-az01-2026-04-30-rt4` (armv7l, PREEMPT_RT)
-- glibc 2.39, `libdrm.so.2.4.0`, `libasound.so.2.0.0`, `libinput.so.10.13.0`
-- Microsoft Trackball Explorer on the Force's USB hub
+## What changed in firmware 3.9.1.2
 
-The first row comes from the development notes of the original addon (the firmware version is
-not stated there; the original working folder is named `mockba-cursor-3.7`); it was not re-tested.
+Versions of this addon before 3.0.0 did nothing on it. Evidence, with commands to reproduce.
 
-## Why it does nothing on 3.9.1.2
+### MPC no longer uses the legacy cursor API
 
-The addon only wakes up when MPC calls `drmModeSetCursor2()` with `bo_handle == 0` (MPC "hides"
-the hardware cursor). That call starts the input thread, creates the uinput touch device and
-draws the cursor. If MPC never makes that call, nothing else in the library ever runs.
-
-### 1. MPC no longer uses the legacy cursor API
-
-The DRM functions imported by `/usr/bin/MPC` on 3.9.1.2:
+The DRM functions imported by `/usr/bin/MPC`:
 
 ```
 drmClose drmDropMaster drmGetCap drmHandleEvent drmIoctl drmModeAddFB2
@@ -35,54 +26,84 @@ drmModeGetEncoder drmModeGetPlane drmModeGetPlaneResources drmModeGetProperty
 drmModeGetResources drmModeObjectGetProperties drmModeRmFB drmSetClientCap drmSetMaster
 ```
 
-No `drmModeSetCursor`, `drmModeSetCursor2` or `drmModeMoveCursor`. Reproduce on the Force:
+No `drmModeSetCursor`, `drmModeSetCursor2` or `drmModeMoveCursor`, which were the addon's only
+entry point.
 
 ```sh
 strings -a /usr/bin/MPC | grep -E '^drm[A-Za-z0-9_]+$' | sort -u
 ```
 
-With the addon enabled and MPC restarted, the library is mapped into MPC
-(`grep libforce_cursor /proc/$(pidof MPC)/maps`) and `/dev/shm/.LD_PRELOAD` lists it, but:
+### MPC reads input through libinput
 
-- the journal has no `[INIT]`, `[CURSOR_PATCH]` or `MockbaMod Mouse Cursor` lines
-  (`journalctl -u acvs`), and
-- `/proc/bus/input/devices` has no `Virtual Mouse Touch` device.
-
-### 2. MPC reads mice itself
-
-MPC has `libinput`, `libevdev`, `libudev` and `libmtdev` mapped, and imports:
-
-```
-libinput_event_pointer_get_dx / get_dy        relative motion (mouse, trackball)
-libinput_event_pointer_get_button(_state)     buttons
-libinput_event_pointer_get_scroll_value       wheel
-libinput_event_pointer_get_absolute_*         absolute pointers
-libinput_event_touch_get_slot / x / y         multi-touch
-```
-
-`udev` tags the trackball as `ID_INPUT_MOUSE=1`, `ID_INPUT_TRACKBALL=1`, and MPC holds the
-trackball's `/dev/input/eventN` open. So a plain USB mouse is already a pointer for MPC. Whether
-it draws a visible cursor, and what the wheel does, was not observed (no screen access during
-this investigation); try it before installing this addon.
+`libinput`, `libevdev`, `libudev` and `libmtdev` are mapped into MPC, and MPC imports
+`libinput_event_pointer_get_dx/dy/button/scroll_value/absolute_*` and
+`libinput_event_touch_get_slot/x/y`. It holds every `/dev/input/eventN` open, so any new input
+device is a candidate input source. udev tags the trackball `ID_INPUT_MOUSE=1`,
+`ID_INPUT_TRACKBALL=1`. Whether MPC draws a cursor for a plain mouse was not observed; in
+practice the user saw no cursor.
 
 ```sh
 strings -a /usr/bin/MPC | grep -E '^libinput_event_(pointer|touch)_[a-z_]+$' | sort -u
-awk '{print $6}' /proc/$(pidof MPC)/maps | sort -u | grep -E 'libinput|libevdev|libudev'
+ls -l /proc/$(pidof MPC)/fd | grep input/event
 ```
 
-## When the addon can still help
+### How MPC uses the display planes
 
-- An older MPC binary run with MockbaMod's `ALTMPC` (the binary must still call the legacy cursor
-  functions). Not tested.
-- Features MPC does not provide natively: button-to-MIDI-CC mappings, wheel-as-pinch. Whether
-  3.9.1.2 handles the wheel as zoom natively was not checked.
+`/sys/kernel/debug/dri/1/state` and the `drm_planes` tool show one CRTC (id 37, 800x1280, portrait)
+and four planes:
 
-A future version would need a different entry point (a library constructor plus a hook on
-`drmModeAtomicCommit` to learn the DRM fd, and a way to draw a cursor with the atomic API) and
-a way to avoid double-handling events that MPC already reads through `libinput`. That is not
-implemented.
+| Plane | Type | State |
+|---|---|---|
+| 33 | primary | in use: 800x1280 `XR24` dumb framebuffers created by MPC, flipped between two buffers |
+| 35 | **cursor** | free, formats include `AR24` (ARGB8888) |
+| 38, 40 | overlay | free |
+
+MPC renders its interface at 1280x800 and rotates it into the portrait buffer (the kernel log has
+`rockchip-rga` converting 1280x800 to 800x1280).
+
+A cursor enabled once through the legacy ioctls does not survive: MPC writes two properties of the
+cursor plane (ids 17 and 20) to 0 in its atomic commits, which leaves it with `crtc=(null) fb=0`.
+The `[ATOMIC]` lines in the journal show this (the first 24 writes are logged).
+
+```sh
+/media/662522/AddOns/mouseCursor/tools/drm_planes /dev/dri/card1
+awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/1/state
+```
+
+### Input event numbers move
+
+Without the touch controller (see [TOUCH_NOT_LOADING.md](TOUCH_NOT_LOADING.md)) the nodes are
+`event0` gpio-keys, `event1` mouse, `event2` Amit's Input Provider; with it, one higher.
+
+## How 3.0.0 adapts
+
+- Starts from a library constructor inside MPC instead of waiting for the legacy cursor call.
+- Adds the cursor plane to every real `drmModeAtomicCommit` MPC makes, so the plane stays on.
+- Creates a virtual multi-touch screen before MPC builds its libinput context, and grabs the
+  mouse so MPC does not also act on it.
+
+Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Verification
+
+Done on 2026-10-05 with a synthetic mouse (`tools/fake_mouse`) and the real trackball:
+
+- The library loads in MPC; the constructor, DRM discovery, cursor buffer, framebuffer and
+  atomic setup run (`[BOOT]` lines).
+- Cursor plane 35 reports `crtc=crtc-0`, a 64x64 `AR24` framebuffer and a position that follows
+  the mouse with the expected mapping and clamping, while MPC keeps committing frames.
+- `Virtual Mouse Touch` exists with `INPUT_PROP_DIRECT`, udev tags it `ID_INPUT_TOUCHSCREEN=1`,
+  and MPC holds it open.
+- A click, a drag and wheel up/down produce the expected touch frames (`tools/evdump`): single
+  touch with tracking id and position, a held touch that moves, and a two-finger pinch growing
+  from 30 px to 100 px or shrinking back.
+- The mouse is grabbed (`Mouse grabbed` in the log).
+
+Not verified (needs eyes on the screen): that the cursor is visible and upright, that clicks land
+under the cursor, that MPC reacts to the virtual touches and to the pinch, button mappings and MIDI
+CC delivery.
 
 ## Other MockbaMod addons on 3.9.1.2
 
 `mockbaMagic` logs `Your MPC Version is currently not supported ... Your Version : 3.9.1.2` on
-the same Force, so MockbaMod add-ons built for older firmware are generally out of step with it.
+the same Force, so addons built for older firmware are generally out of step with it.
