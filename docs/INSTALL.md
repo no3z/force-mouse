@@ -1,36 +1,72 @@
 # Build and install
 
-> Check [COMPATIBILITY.md](COMPATIBILITY.md) for what is verified on which firmware. A bug inside
-> MPC's process can take the display down, so the addon has a crash-loop guard (see below).
+There are two components, installed independently:
 
-## Requirements
+- **mouse**: the add-on `AddOns/mouseCursor/` (needs a restart of the Force application to start)
+- **touchfix**: `touchfix.sh` and `autoexec.sh` on the SD card root (acts at the next power-up)
 
-- PC: Linux or macOS with Docker (the cross toolchain lives in an image; nothing is installed on
-  the host), `zip`, `ssh`.
-- Force: MockbaMod on the SD card (`/media/662522` with `boot.sh` and `AddOns/`), SSH as root.
+How they plug into MockbaMod and what is automatic: [MOCKBAMOD.md](MOCKBAMOD.md).
 
-## Build
+## Easiest: from the Force itself (no PC tools, no Docker)
 
-```bash
-tools/build.sh
+Needs a terminal on the Force (SSH as root) and internet access from the Force. The Force has `curl` and `unzip`.
+
+```sh
+cd /tmp && curl -L -o fm.zip https://github.com/no3z/force-mouse/releases/latest/download/force-mouse-armv7.zip
+unzip -oq fm.zip
+# touchFix
+cp touchFix/touchfix.sh /media/662522/ && [ -f /media/662522/autoexec.sh ] || cp touchFix/autoexec.sh /media/662522/
+# mouse (restarts the Force application)
+cp -r mouseCursor /media/662522/AddOns/ && sh /media/662522/AddOns/mouseCursor/manage.sh ENABLE
 ```
 
-The first run builds `force-mouse-builder:bookworm` from `tools/Dockerfile` (Debian bookworm,
-`gcc-arm-linux-gnueabihf`, `libdrm-dev:armhf`, `libasound2-dev:armhf`). Then it compiles and checks:
+Run only the part you want. If you already have an `autoexec.sh`, the touchFix line leaves it alone; add
+`sh "$(dirname "$0")/touchfix.sh"` to it yourself. This is for a first install; to upgrade the mouse add-on use
+the next section, because the library is mapped into MPC while it runs and must not be overwritten in place.
 
-- `build/libforce_cursor.so` and the tools: ELF32 ARM, hard-float
-  (`-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard`), stripped
-- needed libraries: `libasound.so.2`, `libdrm.so.2` and `libc.so.6` (MPC already has the first two
-  loaded)
-- the highest glibc symbol must be <= 2.36 (the Force runs 2.39); the build fails otherwise
+## From a computer, without a terminal on the Force
 
-and stages `dist/mouseCursor/`, `dist/force-mouse-<version>-armv7.zip` and `dist/SHA256SUMS`.
+Download and unzip the Release. Then copy to the SD card:
 
-Why bookworm: the earlier notes used `debian:bullseye`, whose armhf security packages now return
-404 and break `apt`. Bookworm's glibc (2.36) is older than the Force's (2.39), so the binaries load.
+- touchFix: `touchFix/touchfix.sh` and `touchFix/autoexec.sh` to the SD card root (beside `boot.sh`).
+- mouse: the `mouseCursor` folder to `AddOns/`, then enable it (see [MOCKBAMOD.md](MOCKBAMOD.md#mouse-a-normal-mockbamod-add-on)).
 
-The kernel version does not matter for the build: the library only uses stable userspace ABIs
-(DRM, evdev, uinput, ALSA sequencer). It was verified on `6.18.26-az01-2026-04-30-rt4`.
+## From a computer with the repository
+
+Requirements: Linux or macOS with Docker (the toolchain lives in an image), `zip` and `ssh`.
+
+```bash
+git clone https://github.com/no3z/force-mouse.git && cd force-mouse
+tools/build.sh
+tools/install.sh <force-ip> mouse touchfix      # either word alone installs just that one
+```
+
+`install.sh` asks for the SSH password **once** (all its steps share one connection) and never stores it. To force
+password authentication when your ssh agent offers many keys:
+`FORCE_SSH_OPTS="-o PreferredAuthentications=password" tools/install.sh <force-ip> mouse`.
+
+What it does:
+
+- **mouse:** copies the add-on to `AddOns/mouseCursor/`, keeps your `device.txt` (the new default is saved as
+  `device.txt.default`) and the previous library as `libforce_cursor.so.prev`, replaces the library by rename (never
+  in place), and runs `manage.sh ENABLE`, which restarts the Force application. **Unsaved project changes are
+  lost.** `-y` skips the question; `--no-restart` installs without restarting, and the add-on loads the next
+  time MPC starts.
+- **touchfix:** puts `touchfix.sh` on the SD card root, and creates `autoexec.sh` only if there is none. If you
+  have one, it is left alone and the installer prints the line to add.
+
+## The build
+
+`tools/build.sh` builds `force-mouse-builder:bookworm` from `tools/Dockerfile` on first use (Debian bookworm,
+`gcc-arm-linux-gnueabihf`, `libdrm-dev:armhf`, `libasound2-dev:armhf`), compiles for ARMv7 hard-float
+(`-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard`), and checks the result: ELF32 ARM, needed libraries
+`libasound.so.2`, `libdrm.so.2` and `libc.so.6`, and no glibc symbol newer than 2.36 (the Force runs 2.39). It
+stages `dist/mouseCursor/`, `dist/touchFix/`, `dist/force-mouse-<version>-armv7.zip` and `dist/SHA256SUMS`.
+Cold, the toolchain image takes about half a minute to build; after that a build takes about 2 seconds.
+
+Why bookworm: `debian:bullseye` returns 404 for its armhf security packages now. The kernel version does not
+matter: the library only uses stable userspace interfaces. The version number is the `VERSION` file at the
+root; one number for the whole package.
 
 Manual build, without the script:
 
@@ -41,106 +77,46 @@ arm-linux-gnueabihf-gcc -shared -fPIC -O2 -Wall -Wextra \
   -o libforce_cursor.so src/force_cursor.c -ldl -lpthread -lasound -ldrm
 ```
 
-## Install from a release (no Docker)
+## Releases
 
-The Releases page has `force-mouse-<version>-armv7.zip` (the `mouseCursor` folder, ready to use) and
-`SHA256SUMS`. Releases are built by GitHub Actions from the tagged commit.
-
-```bash
-sha256sum -c --ignore-missing SHA256SUMS
-unzip force-mouse-*-armv7.zip
-tar -cf - mouseCursor | ssh root@<force-ip> 'tar -xf - -C /media/662522/AddOns && sh /media/662522/AddOns/mouseCursor/manage.sh ENABLE'
-```
-
-This is meant for a first install. It restarts the Force application. To upgrade a running install
-use `tools/install.sh` (it replaces the library by rename), or run `manage.sh DISABLE` before
-copying: the library is mapped into MPC while it runs and must not be overwritten in place.
-
-## Install with the script
-
-```bash
-tools/install.sh <force-ip>            # asks before restarting the Force application
-tools/install.sh <force-ip> -y         # no question
-tools/install.sh <force-ip> --no-restart
-```
-
-ssh asks for the password once (all the steps share one connection). To force password authentication when your ssh agent offers many
-keys: `FORCE_SSH_OPTS="-o PreferredAuthentications=password" tools/install.sh <force-ip>`.
-Nothing in this repository stores or accepts a password.
-
-What it does on the Force:
-
-1. Copies the files to `/media/662522/AddOns/mouseCursor/`.
-2. Keeps the previous library as `libforce_cursor.so.prev` and keeps your existing `device.txt`
-   (the new default is saved as `device.txt.default`).
-3. Runs `manage.sh ENABLE`: copies `run_mouseCursor.sh` to `AddOns/` and `device.txt` to
-   `/dev/shm/.mouseCursor`, then calls `respawn`, which restarts the MPC application.
-   **Unsaved project changes are lost.**
-
-With `--no-restart` the run script is executed once so `/dev/shm/.LD_PRELOAD` is updated, and the
-addon loads the next time MPC starts.
-
-## Install by hand
-
-```bash
-tar -C dist -cf - mouseCursor | ssh root@<force-ip> 'tar -xf - -C /media/662522/AddOns'
-ssh root@<force-ip> 'sh /media/662522/AddOns/mouseCursor/manage.sh ENABLE'
-```
-
-The SD card is FAT/exFAT: files show as executable through the mount options, `chmod` has no
-lasting effect.
-
-## How MockbaMod loads it
-
-`boot.sh` (run by `az01-launch-MPC` under `acvs.service`) executes every `AddOns/*.sh` before it
-starts MPC. `run_mouseCursor.sh` prepends `libforce_cursor.so` to `/dev/shm/.LD_PRELOAD` and copies
-`device.txt` to `/dev/shm/.mouseCursor`; `boot.sh` then exports `LD_PRELOAD` from that file and
-launches `/usr/bin/MPC`. `/dev/shm` is RAM, so this is rebuilt on every start.
+Pushing a tag that matches `VERSION` (for `3.1.0`, the tag `v3.1.0`) runs `.github/workflows/release.yml`:
+it builds on GitHub from that commit and publishes the zip (also as `force-mouse-armv7.zip`, a name without the
+version for the "latest" link) and `SHA256SUMS` as a Release. No personal token is involved.
+Check a download with `sha256sum -c --ignore-missing SHA256SUMS`.
 
 ## Verify
 
-```bash
-ssh root@<force-ip> '
-  cat /dev/shm/.LD_PRELOAD                              # lists .../mouseCursor/libforce_cursor.so
-  cat /dev/shm/.mouseCursor | head -n 3                 # the active configuration
-  grep -c libforce_cursor /proc/$(pidof MPC)/maps       # > 0: loaded in MPC
-  journalctl -u acvs --no-pager | grep -E "Mouse Cursor|\[INIT\]|\[TOUCHSCREEN\]|CURSOR_PATCH"
-  grep -c "Virtual Mouse Touch" /proc/bus/input/devices # 1 once the input thread started
-'
-```
-
-The journal unit is `acvs` (`systemctl status acvs`). The `inmusic-mpc` name used by some other
-addons' `manage.sh` does not exist on firmware 3.9.1.2.
-
-On-device tools are installed in `/media/662522/AddOns/mouseCursor/tools/`:
+Mouse:
 
 ```sh
-tools/probe_inputs                      # which event node is used for the mouse and key injection
-tools/drm_planes         # CRTC and planes: types, formats, state
-tools/evdump /dev/input/eventN 10       # print the events of a device for 10 s (evtest is not installed)
-tools/drm_screenshot /tmp/screen.ppm    # what the Force is showing (landscape PPM; -r keeps the panel orientation)
-sh tools/touch_reset.sh                 # touch controller not detected at boot: pulse its reset line (see TOUCH_NOT_LOADING.md)
-tools/fake_mouse                        # virtual mouse driven by a FIFO, for testing without hardware
+cat /dev/shm/.LD_PRELOAD                              # lists .../mouseCursor/libforce_cursor.so
+grep -c libforce_cursor /proc/$(pidof MPC)/maps       # > 0: loaded in MPC
+journalctl -u acvs --no-pager | grep -E "\[BOOT\]|\[INIT\]|\[GUARD\]"
+awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/*/state 2>/dev/null | grep -E 'crtc=|fb=|crtc-pos'
 ```
 
-Cursor plane state, without looking at the screen:
+`crtc=crtc-0` with a 64x64 `AR24` framebuffer means the cursor is on; `crtc-pos` follows the mouse. The journal
+unit is `acvs`. Debugfs is `dri/0` or `dri/1` depending on the boot.
+
+touchFix: `cat /media/662522/touchfix.log` (one line per boot, from the first power-up after installing).
+
+Tools in `/media/662522/AddOns/mouseCursor/tools/`:
 
 ```sh
-awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/*/state | grep -E 'crtc=|fb=|crtc-pos'
+probe_inputs                      # which event node is used for the mouse and for key injection
+drm_planes                        # CRTC and planes: types, formats, state
+drm_screenshot /tmp/screen.ppm    # what the Force is showing (landscape PPM; -r keeps the panel orientation)
+evdump /dev/input/eventN 10       # print a device's events for 10 s (evtest is not installed)
+fake_mouse                        # virtual mouse driven by a FIFO, for testing without hardware
 ```
 
-`crtc=crtc-0` with a 64x64 `AR24` framebuffer means the cursor is on; `crtc-pos` follows the mouse.
+## Turn off, uninstall, roll back
 
-## Disable, uninstall, roll back
-
-```bash
-ssh root@<force-ip> 'sh /media/662522/AddOns/mouseCursor/manage.sh DISABLE'
-```
-
-`DISABLE` removes the run script, the RAM configuration and the entry in `/dev/shm/.LD_PRELOAD`,
-then restarts the application (before 2.1.0 the preload entry stayed until a reboot).
-
-If the Force shows nothing after a bad build, SSH in (sshd does not depend on MPC) and run the
-command above, then `systemctl reset-failed acvs; systemctl restart acvs`. To remove
-the files too, delete `/media/662522/AddOns/mouseCursor` afterwards. To roll back a bad build,
-copy `libforce_cursor.so.prev` over `libforce_cursor.so` and restart the application.
+- **touchFix:** delete `autoexec.sh` from the SD card root. Remove `touchfix.sh` and `touchfix.log` too if you
+  want it gone.
+- **mouse:** `sh /media/662522/AddOns/mouseCursor/manage.sh DISABLE` (or Disable in `adm`). It removes the run
+  script, the RAM configuration and the library from `/dev/shm/.LD_PRELOAD`, then restarts the Force application.
+  Delete `AddOns/mouseCursor` afterwards to remove the files. To roll back a bad build, copy
+  `libforce_cursor.so.prev` over `libforce_cursor.so` and restart the application.
+- **The Force shows nothing after installing the mouse add-on:** SSH in (sshd does not depend on MPC), run the
+  `DISABLE` command above, then `systemctl reset-failed acvs; systemctl restart acvs`.

@@ -43,21 +43,25 @@ compile() {
 stage() {
     cd "$ROOT"
     local version dest
-    version="$(tr -d '[:space:]' <addon/VERSION)"
+    version="$(tr -d '[:space:]' <VERSION)"
     dest="dist/mouseCursor"
     rm -rf "$dest"
     mkdir -p "$dest"
-    cp addon/manage.sh addon/run_mouseCursor.sh addon/device.txt addon/README.txt addon/VERSION "$dest/"
+    cp addon/manage.sh addon/run_mouseCursor.sh addon/device.txt addon/README.txt VERSION "$dest/"
     cp LICENSE NOTICE.md "$dest/"
     cp build/libforce_cursor.so "$dest/"
     mkdir -p "$dest/tools"
     cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot "$dest/tools/"
-    cp tools/touch_reset.sh "$dest/tools/"
     chmod +x "$dest/manage.sh" "$dest/run_mouseCursor.sh" "$dest"/tools/*
+    # touchFix: two shell scripts that go to the SD card root
+    rm -rf dist/touchFix
+    mkdir -p dist/touchFix
+    cp touchfix/touchfix.sh touchfix/autoexec.sh touchfix/README.txt LICENSE dist/touchFix/
+    chmod +x dist/touchFix/*.sh
     rm -f "dist/force-mouse-${version}-armv7.zip"
-    (cd dist && zip -qr "force-mouse-${version}-armv7.zip" mouseCursor)
+    (cd dist && zip -qr "force-mouse-${version}-armv7.zip" mouseCursor touchFix)
     (cd dist && sha256sum "force-mouse-${version}-armv7.zip" mouseCursor/libforce_cursor.so | tee SHA256SUMS)
-    echo "staged: dist/mouseCursor and dist/force-mouse-${version}-armv7.zip"
+    echo "staged: dist/mouseCursor, dist/touchFix and dist/force-mouse-${version}-armv7.zip"
 }
 
 if [ "${1:-}" = "--inside" ]; then

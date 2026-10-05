@@ -67,12 +67,12 @@ Measured on 2026-10-05 on the unit above, on the bad boot:
   `firmware is up-to-date (5.0; target 5.0)`, `4-0026` bound and `ILI2117 Touchscreen` present as
   `/dev/input/event0`.
 
-`tools/touch_reset.sh` does the pulse and reports whether the controller answers on its normal
-address; it refuses to touch anything if the kernel already has a touch controller bound. Run it
-on the Force as root, then reboot:
+[touchFix](TOUCHFIX.md) does exactly this by itself at every power-up: if the touch is missing it pulses the
+reset line and, when the controller answers again, reboots once. It does nothing if the kernel already has a
+touch controller bound. By hand, as root on the Force:
 
 ```sh
-sh /media/662522/AddOns/mouseCursor/tools/touch_reset.sh && reboot
+sh /media/662522/touchfix.sh
 ```
 
 Caveats: this is one observation. A plain reboot without the pulse was not tried, so it may have been

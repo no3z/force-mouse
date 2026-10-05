@@ -15,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: The tag must match addon/VERSION
-        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < addon/VERSION)"
+      - name: The tag must match VERSION
+        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
 
       - name: Build
         run: tools/build.sh
@@ -25,7 +25,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # the same zip under a name without the version, so .../releases/latest/download/force-mouse-armv7.zip works
+          cp dist/force-mouse-*-armv7.zip dist/force-mouse-armv7.zip
           gh release create "${GITHUB_REF_NAME}" \
-            dist/force-mouse-*-armv7.zip dist/SHA256SUMS \
-            --title "Mouse Cursor add-on ${GITHUB_REF_NAME} for Akai Force" \
+            dist/force-mouse-*-armv7.zip dist/force-mouse-armv7.zip dist/SHA256SUMS \
+            --title "force-mouse ${GITHUB_REF_NAME}: mouse support and touchscreen recovery for the Akai Force" \
             --notes-file .github/release-notes.md

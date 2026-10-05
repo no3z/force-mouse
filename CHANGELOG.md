@@ -1,12 +1,21 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 - 2026-10-05
 
-- New tool `touch_reset.sh`: pulses the touch controller's reset line when the kernel did not bind it
-  at boot. On the author's Force it brought the ILI2117 back on its normal address, and a reboot then
-  gave a working touchscreen; one observation, no control. See `docs/TOUCH_NOT_LOADING.md`.
-- `drm_planes` and `drm_screenshot` pick the display card themselves: it is `card0` on some boots and
-  `card1` on others. The docs use `/sys/kernel/debug/dri/*/state`.
+The repository now has two components of equal weight: the mouse add-on and the touchscreen recovery.
+
+- **touchFix (new):** `touchfix.sh` plus a three-line `autoexec.sh` on the SD card root. At power-up, if the
+  touch controller was not detected, it pulses the controller's reset line and reboots once if the controller
+  answers again; it logs every boot to `touchfix.log` and never reboots twice in a row. On the author's Force a
+  reset brought the ILI2117 back on its normal address and a reboot then gave a working touchscreen (one
+  observation, no control). Nothing inside MockbaMod is changed; see `docs/TOUCHFIX.md` and `docs/MOCKBAMOD.md`.
+- One version number for the whole package (`VERSION`); the mouse add-on's `VERSION` is generated from it.
+- `tools/install.sh <ip> [mouse] [touchfix]` installs either or both; the Release workflow also publishes
+  `force-mouse-armv7.zip` (no version in the name) so `.../releases/latest/download/...` works, which allows
+  installing from the Force itself with `curl` and `unzip`.
+- `drm_planes` and `drm_screenshot` pick the display card themselves: it is `card0` on some boots and `card1` on
+  others. The docs use `/sys/kernel/debug/dri/*/state`.
+- The mouse add-on itself is unchanged from 3.0.1.
 
 ## 3.0.1 - 2026-10-05
 
