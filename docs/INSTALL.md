@@ -49,7 +49,7 @@ tools/install.sh <force-ip> -y         # no question
 tools/install.sh <force-ip> --no-restart
 ```
 
-ssh asks for the password. To force password authentication when your ssh agent offers many
+ssh asks for the password once (all the steps share one connection). To force password authentication when your ssh agent offers many
 keys: `FORCE_SSH_OPTS="-o PreferredAuthentications=password" tools/install.sh <force-ip>`.
 Nothing in this repository stores or accepts a password.
 

@@ -31,7 +31,12 @@ STAGE="$ROOT/dist/mouseCursor"
 SD=/media/662522
 # FORCE_SSH_OPTS adds ssh options, e.g. FORCE_SSH_OPTS="-o PreferredAuthentications=password"
 read -r -a EXTRA_SSH_OPTS <<<"${FORCE_SSH_OPTS:-}"
-SSH=(ssh -o ConnectTimeout=8 "${EXTRA_SSH_OPTS[@]}" "root@$HOST")
+# One connection is shared by every ssh call below, so the password is asked only once.
+CONTROL="$(mktemp -u "${TMPDIR:-/tmp}/force-mouse-ssh.XXXXXX")"
+SSH_OPTS=(-o ConnectTimeout=8 -o ControlMaster=auto -o "ControlPath=$CONTROL" -o ControlPersist=60
+    ${EXTRA_SSH_OPTS[@]+"${EXTRA_SSH_OPTS[@]}"})
+SSH=(ssh "${SSH_OPTS[@]}" "root@$HOST")
+trap 'ssh "${SSH_OPTS[@]}" -O exit "root@$HOST" >/dev/null 2>&1 || true' EXIT
 
 echo "Target: root@$HOST ($SD/AddOns/mouseCursor)"
 "${SSH[@]}" "test -d $SD/MockbaMod && test -d $SD/AddOns" \
