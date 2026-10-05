@@ -64,7 +64,8 @@ src/input_probe.h     device lookup by capability / name
 src/mouse_cursor.h    cursor bitmap
 addon/                files that go to <SD>/AddOns/mouseCursor (manage.sh, run script, device.txt)
 tools/                build.sh, install.sh, Dockerfile, and on-device tools:
-                      probe_inputs, drm_planes, evdump, fake_mouse, test_mouse_buttons.sh
+                      probe_inputs, drm_planes, drm_screenshot, evdump, fake_mouse,
+                      touch_reset.sh, test_mouse_buttons.sh
 docs/                 documentation
 ```
 

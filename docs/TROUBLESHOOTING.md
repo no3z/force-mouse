@@ -28,14 +28,14 @@ A healthy start on firmware 3.9.1.2 logs, in this order:
 3. What is the cursor plane doing? It should be on, with a 64x64 `AR24` framebuffer:
 
    ```sh
-   awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/1/state | grep -E 'crtc=|fb=|crtc-pos|format='
+   awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/*/state | grep -E 'crtc=|fb=|crtc-pos|format='
    ```
 
    `crtc=(null) fb=0` means something switched it off. MPC does that on every commit, and the addon
    counters it by adding the plane to MPC's commits; if `[ATOMIC] Commit with the cursor failed ...`
    is in the log the kernel rejected the plane and injection stops after three such failures.
 4. `[BOOT] No cursor plane found` or `No active DRM device found in this process`: run
-   `tools/drm_planes /dev/dri/card1`, which should list a plane of `type=cursor` with `AR24`,
+   `tools/drm_planes`, which should list a plane of `type=cursor` with `AR24`,
    and send its output.
 
 ## The cursor looks rotated or mirrored
@@ -104,7 +104,7 @@ The two ways of positioning the cursor plane disagreed by the hot spot offset, s
 alternated between two positions 63 px apart whenever MPC redrew while the mouse moved. Update to
 3.0.1. To check a version: sample the plane position while moving the mouse and look for jumps,
 for example with `tools/fake_mouse` and
-`awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f && /crtc-pos/' /sys/kernel/debug/dri/1/state`.
+`awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f && /crtc-pos/' /sys/kernel/debug/dri/*/state`.
 
 ## Cursor is erratic or too fast
 

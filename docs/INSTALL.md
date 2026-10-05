@@ -116,16 +116,17 @@ On-device tools are installed in `/media/662522/AddOns/mouseCursor/tools/`:
 
 ```sh
 tools/probe_inputs                      # which event node is used for the mouse and key injection
-tools/drm_planes /dev/dri/card1         # CRTC and planes: types, formats, state
+tools/drm_planes         # CRTC and planes: types, formats, state
 tools/evdump /dev/input/eventN 10       # print the events of a device for 10 s (evtest is not installed)
 tools/drm_screenshot /tmp/screen.ppm    # what the Force is showing (landscape PPM; -r keeps the panel orientation)
+sh tools/touch_reset.sh                 # touch controller not detected at boot: pulse its reset line (see TOUCH_NOT_LOADING.md)
 tools/fake_mouse                        # virtual mouse driven by a FIFO, for testing without hardware
 ```
 
 Cursor plane state, without looking at the screen:
 
 ```sh
-awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/1/state | grep -E 'crtc=|fb=|crtc-pos'
+awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/*/state | grep -E 'crtc=|fb=|crtc-pos'
 ```
 
 `crtc=crtc-0` with a 64x64 `AR24` framebuffer means the cursor is on; `crtc-pos` follows the mouse.

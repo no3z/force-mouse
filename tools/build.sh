@@ -52,6 +52,7 @@ stage() {
     cp build/libforce_cursor.so "$dest/"
     mkdir -p "$dest/tools"
     cp build/probe_inputs build/evdump build/fake_mouse build/drm_planes build/drm_screenshot "$dest/tools/"
+    cp tools/touch_reset.sh "$dest/tools/"
     chmod +x "$dest/manage.sh" "$dest/run_mouseCursor.sh" "$dest"/tools/*
     rm -f "dist/force-mouse-${version}-armv7.zip"
     (cd dist && zip -qr "force-mouse-${version}-armv7.zip" mouseCursor)

@@ -33,8 +33,10 @@ detected panel; that was not verified. The kernel has the drivers (`ili210x_i2c`
 ACK addresses on i2c-4: ['0x62']
 ```
 
-Something does answer at `0x62`, which is not one of the expected addresses. It may be the touch
-IC in an unexpected mode (a bootloader or recovery mode, for example); that is a guess.
+Something did answer at `0x62`. The device tree names it: `ili2117@26` has `reg = <0x26 0x62>` and
+`reg-names = "default", "upgrade"`, so `0x26` is the normal address and `0x62` the upgrade
+(bootloader) address. On the bad boot the touch IC was powered and reachable only on its upgrade
+address (a later scan found nothing at all). The panel is therefore an Ilitek ILI2117.
 
 **Resulting inputs.** Only `gpio-keys`, the USB mouse and `Amit's Input Provider` exist, so every
 event number is one lower than on a good boot. A fixed `/dev/input/event2` for the mouse then points
@@ -49,6 +51,33 @@ looks like on the same unit.
 **What the addon does about it.** Since 3.0.0 the addon sends clicks, drags and the zoom gesture
 through its own virtual touch screen, so a Force whose physical touch controller did not load can
 still be driven with a mouse. It does not fix the controller: see below.
+
+## Recovery without a power cycle (measured)
+
+Measured on 2026-10-05 on the unit above, on the bad boot:
+
+- TOUCH_RST is GPIO7 pin 5 and TOUCH_INT pin 6 (sysfs numbers 221 and 222 there: the base of the
+  `gpio7` chip plus the pin). No driver had claimed either line, because the touch node is disabled.
+- A 20 ms low pulse on TOUCH_RST made the controller answer on `0x26` (and `0x62`) again, stable
+  across five repeated full scans over five seconds. Nothing was written to the controller and
+  TOUCH_INT was never driven.
+- The kernel binds the touch driver only when U-Boot enables the device-tree node at boot, and this
+  kernel has no way to enable it later (no `OF_CONFIGFS`, so no overlays from userspace). A reboot
+  was needed. After a normal reboot: `touch-fw-upd: found name 'ili2117'`,
+  `firmware is up-to-date (5.0; target 5.0)`, `4-0026` bound and `ILI2117 Touchscreen` present as
+  `/dev/input/event0`.
+
+`tools/touch_reset.sh` does the pulse and reports whether the controller answers on its normal
+address; it refuses to touch anything if the kernel already has a touch controller bound. Run it
+on the Force as root, then reboot:
+
+```sh
+sh /media/662522/AddOns/mouseCursor/tools/touch_reset.sh && reboot
+```
+
+Caveats: this is one observation. A plain reboot without the pulse was not tried, so it may have been
+enough on its own. And why the controller stops answering is still unknown. What it does rule out is
+a corrupt controller firmware: the version read after recovery is 5.0, equal to the target.
 
 ## Hypotheses, most likely first
 

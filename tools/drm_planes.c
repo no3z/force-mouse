@@ -3,7 +3,7 @@
  * supported formats and current state. Read-only: it only issues GET ioctls, so it is
  * safe to run while MPC owns the display.
  *
- *   drm_planes [/dev/dri/card1]
+ *   drm_planes [/dev/dri/cardN]      (default: the first card with a CRTC)
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -12,6 +12,27 @@
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+
+
+/* The display is card0 on some boots and card1 on others (the panfrost GPU takes the other one),
+ * so by default use the first card that has a CRTC. */
+static const char* find_display_card(char* buf, size_t len)
+{
+    for (int i = 0; i < 4; i++) {
+        snprintf(buf, len, "/dev/dri/card%d", i);
+        int fd = open(buf, O_RDWR | O_CLOEXEC);
+        if (fd < 0)
+            continue;
+        drmModeRes* res = drmModeGetResources(fd);
+        int ok = res && res->count_crtcs > 0;
+        if (res)
+            drmModeFreeResources(res);
+        close(fd);
+        if (ok)
+            return buf;
+    }
+    return "/dev/dri/card0";
+}
 
 static const char* plane_type_name(uint64_t v)
 {
@@ -25,7 +46,8 @@ static void print_fourcc(uint32_t f)
 
 int main(int argc, char** argv)
 {
-    const char* path = argc > 1 ? argv[1] : "/dev/dri/card1";
+    char found[32];
+    const char* path = argc > 1 ? argv[1] : find_display_card(found, sizeof found);
     int fd = open(path, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         perror(path);

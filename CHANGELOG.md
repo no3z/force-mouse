@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- New tool `touch_reset.sh`: pulses the touch controller's reset line when the kernel did not bind it
+  at boot. On the author's Force it brought the ILI2117 back on its normal address, and a reboot then
+  gave a working touchscreen; one observation, no control. See `docs/TOUCH_NOT_LOADING.md`.
+- `drm_planes` and `drm_screenshot` pick the display card themselves: it is `card0` on some boots and
+  `card1` on others. The docs use `/sys/kernel/debug/dri/*/state`.
+
 ## 3.0.1 - 2026-10-05
 
 - Fix: the cursor sometimes glitched and jumped around. The legacy cursor move ioctl ignores the hot

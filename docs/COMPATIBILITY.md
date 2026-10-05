@@ -49,7 +49,7 @@ ls -l /proc/$(pidof MPC)/fd | grep input/event
 
 ### How MPC uses the display planes
 
-`/sys/kernel/debug/dri/1/state` and the `drm_planes` tool show one CRTC (id 37, 800x1280, portrait)
+`/sys/kernel/debug/dri/*/state` and the `drm_planes` tool show one CRTC (id 37, 800x1280, portrait)
 and four planes:
 
 | Plane | Type | State |
@@ -66,11 +66,16 @@ cursor plane (ids 17 and 20) to 0 in its atomic commits, which leaves it with `c
 The `[ATOMIC]` lines in the journal show this (the first 24 writes are logged).
 
 ```sh
-/media/662522/AddOns/mouseCursor/tools/drm_planes /dev/dri/card1
-awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/1/state
+/media/662522/AddOns/mouseCursor/tools/drm_planes
+awk '/^plane\[35\]/{f=1} /^plane\[38\]/{f=0} f' /sys/kernel/debug/dri/*/state
 ```
 
-### Input event numbers move
+### Card and input numbers move
+
+The display is `/dev/dri/card1` on some boots and `card0` on others (the panfrost GPU takes the other
+one), so `debugfs` is `/sys/kernel/debug/dri/0/` or `.../1/`; use `*` and the tools' automatic
+choice. The addon finds MPC's own DRM fd and is not affected.
+
 
 Without the touch controller (see [TOUCH_NOT_LOADING.md](TOUCH_NOT_LOADING.md)) the nodes are
 `event0` gpio-keys, `event1` mouse, `event2` Amit's Input Provider; with it, one higher.

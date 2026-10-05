@@ -1,7 +1,7 @@
 /**
  * drm_screenshot - save what the Force is showing, as a PPM image (root only, read-only).
  *
- *   drm_screenshot [-r] [out.ppm] [/dev/dri/card1]
+ *   drm_screenshot [-r] [out.ppm] [/dev/dri/cardN]    (default: the first card with a CRTC)
  *
  * Reads the framebuffer scanned out by the largest enabled plane, which is MPC's interface.
  * The panel is portrait (800x1280) while MPC draws a landscape interface rotated by 90 degrees,
@@ -19,6 +19,27 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+
+/* The display is card0 on some boots and card1 on others (the panfrost GPU takes the other one),
+ * so by default use the first card that has a CRTC. */
+static const char* find_display_card(char* buf, size_t len)
+{
+    for (int i = 0; i < 4; i++) {
+        snprintf(buf, len, "/dev/dri/card%d", i);
+        int fd = open(buf, O_RDWR | O_CLOEXEC);
+        if (fd < 0)
+            continue;
+        drmModeRes* res = drmModeGetResources(fd);
+        int ok = res && res->count_crtcs > 0;
+        if (res)
+            drmModeFreeResources(res);
+        close(fd);
+        if (ok)
+            return buf;
+    }
+    return "/dev/dri/card0";
+}
+
 int main(int argc, char** argv)
 {
     int raw = 0, argi = 1;
@@ -27,7 +48,8 @@ int main(int argc, char** argv)
         argi++;
     }
     const char* out = argi < argc ? argv[argi++] : "/tmp/screen.ppm";
-    const char* card = argi < argc ? argv[argi] : "/dev/dri/card1";
+    char found[32];
+    const char* card = argi < argc ? argv[argi] : find_display_card(found, sizeof found);
 
     int fd = open(card, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
