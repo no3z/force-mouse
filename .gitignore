@@ -1,0 +1,10 @@
+# build output
+build/
+dist/
+*.o
+*.so
+
+# macOS
+._*
+.DS_Store
+__MACOSX/
